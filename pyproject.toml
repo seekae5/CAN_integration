@@ -1,0 +1,17 @@
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "can-temperature"
+version = "0.1.0"
+description = "Schlanke Temperaturmessung fuer CAN-Sensoren"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "python-can>=4.4,<5",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
