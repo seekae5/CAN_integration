@@ -18,7 +18,19 @@ class DecodeTemperatureTests(unittest.TestCase):
         with self.assertRaisesRegex(InvalidTemperatureFrameError, "7"):
             decode_temperature(bytes(7))
 
+    def test_decodes_at_a_custom_offset(self) -> None:
+        payload = bytes.fromhex("C8 0D 00 00 00 00 00 00")
+
+        self.assertEqual(decode_temperature(payload, offset=0), 35.28)
+
+    def test_rejects_a_payload_too_short_for_the_custom_offset(self) -> None:
+        with self.assertRaisesRegex(InvalidTemperatureFrameError, "offset 6"):
+            decode_temperature(bytes(7), offset=6)
+
+    def test_rejects_a_negative_offset(self) -> None:
+        with self.assertRaises(ValueError):
+            decode_temperature(bytes(8), offset=-1)
+
 
 if __name__ == "__main__":
     unittest.main()
-

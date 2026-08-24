@@ -5,13 +5,18 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "can-temperature"
 version = "0.1.0"
-description = "Schlanke Temperaturmessung fuer CAN-Sensoren"
+description = "Schlanke Temperaturmessung für CAN-Sensoren"
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
     "python-can>=4.4,<5",
 ]
 
+[project.urls]
+Repository = "https://github.com/seekae5/CAN_integration"
+
 [tool.setuptools.packages.find]
 where = ["src"]
 
+[tool.setuptools.package-data]
+can_temperature = ["py.typed"]

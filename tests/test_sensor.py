@@ -88,6 +88,16 @@ class TemperatureSensorTests(unittest.TestCase):
         with self.assertRaises(TemperatureTimeoutError):
             sensor.read_temperature(timeout=0)
 
+    def test_uses_a_custom_temperature_offset(self) -> None:
+        payload = bytes.fromhex("C8 0D 00 00 00 00 00 00")
+        sensor = TemperatureSensor(
+            self.sensor_id,
+            bus=FakeBus([message(self.sensor_id, payload)]),
+            temperature_offset=0,
+        )
+
+        self.assertEqual(sensor.read_temperature(), 35.28)
+
     def test_rejects_short_matching_frame(self) -> None:
         sensor = TemperatureSensor(
             self.sensor_id,
@@ -131,6 +141,44 @@ class TemperatureSensorTests(unittest.TestCase):
             TemperatureSensor(0x20000000)
         with self.assertRaises(ValueError):
             TemperatureSensor(self.sensor_id, bitrate=0)
+        with self.assertRaises(TypeError):
+            TemperatureSensor(self.sensor_id, bus=FakeBus([]), bitrate=500_000)
+        with self.assertRaises(ValueError):
+            TemperatureSensor(self.sensor_id, temperature_offset=-1)
+
+    def test_forwards_custom_bus_parameters(self) -> None:
+        with patch("can_temperature.sensor.can.Bus", return_value=FakeBus([])) as factory:
+            TemperatureSensor(
+                self.sensor_id,
+                interface="virtual",
+                channel="test",
+                bitrate=500_000,
+            ).connect()
+
+        keywords = factory.call_args.kwargs
+        self.assertEqual(keywords["interface"], "virtual")
+        self.assertEqual(keywords["channel"], "test")
+        self.assertEqual(keywords["bitrate"], 500_000)
+
+    def test_connect_returns_the_bus_and_is_idempotent(self) -> None:
+        bus = FakeBus([])
+        sensor = TemperatureSensor(self.sensor_id, bus=bus)
+
+        self.assertIs(sensor.connect(), bus)
+        self.assertIs(sensor.connect(), bus)
+
+    def test_reopens_owned_bus_after_close(self) -> None:
+        buses = [FakeBus([]), FakeBus([])]
+
+        with patch("can_temperature.sensor.can.Bus", side_effect=buses) as factory:
+            sensor = TemperatureSensor(self.sensor_id)
+            sensor.connect()
+            sensor.close()
+            sensor.connect()
+            sensor.close()
+
+        self.assertEqual(factory.call_count, 2)
+        self.assertEqual([bus.shutdown_calls for bus in buses], [1, 1])
 
 
 if __name__ == "__main__":
