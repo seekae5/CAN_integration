@@ -2,6 +2,11 @@
 
 > Interne technische Referenz für die spätere Weiterentwicklung der CAN-Integration.  
 > Stand: 24.08.2026
+>
+> **Hinweis:** Dieses Dokument hält den Stand der Ursprungsskripte fest und ist
+> als Herleitung weiterhin gültig. Verbindlich für die Implementierung ist
+> inzwischen der Katalog in `src/can_integration/catalog.py`; Abschnitt 13
+> beschreibt die dort umgesetzte Struktur.
 
 ## 1. Zweck und Kurzfassung
 
@@ -311,39 +316,47 @@ Diese Variante verhindert, dass ein gleich nummeriertes Frame mit falschem ID-Ty
 
 Das empfangene Frame besitzt weniger als acht Datenbytes. Vor dem Dekodieren `len(msg.data) >= 8` prüfen.
 
-## 13. Empfohlene nächste Struktur im Repository
+## 13. Umgesetzte Struktur im Repository
 
-Für die spätere Integration bietet sich folgende Aufteilung an:
+Die Aufteilung liegt inzwischen vor:
 
 ```text
-src/
-├── protocol.py   # CAN-IDs, Payload-Dekodierung, Skalierungen
-├── sensor.py     # Buszugriff, Empfangsloop, Sensorzustand
+src/can_integration/
+├── catalog.py    # Nachschlagetabelle: CAN-ID -> Bedeutung, plus JSON-Erweiterung
+├── signals.py    # Signal/Message, reine Dekodierung ohne Hardwarezugriff
+├── bus.py        # Öffnen, Filtern, Schließen des python-can-Busses
+├── monitor.py    # Hintergrundempfang für die laufende Messung
+├── reader.py     # blockierender Einzelabruf für die Inbetriebnahme
+├── config.py     # Messkonfiguration aus JSON
 └── __init__.py
 ```
 
-Empfohlene Verantwortlichkeiten:
+Verantwortlichkeiten:
 
-- `protocol.py`: Konstanten für IDs, Datenklassen für dekodierte Werte und reine Decoder-Funktionen ohne Hardwarezugriff.
-- `sensor.py`: Öffnen/Schließen des CAN-Busses, Filtern der Nachrichten, Thread-Lebenszyklus und Weitergabe der Messwerte.
+- `catalog.py`: die einzige Stelle, an der eine neue CAN-Funktion eingetragen
+  wird. Jeder Eintrag nennt ID, Signale und die Herkunft seines Layouts.
+- `signals.py`: Datenklassen und reine Decoder-Funktionen. Byte-Reihenfolge und
+  Vorzeichen stehen je Signal als `struct`-Format fest, nicht global.
+- `bus.py`, `monitor.py`, `reader.py`: Hardwarezugriff, Filter, Thread-Lebenszyklus.
 - Separate Anwendung: Plot, CSV-Protokollierung oder Yokogawa-Automatisierung.
 
-Hardwarezugriff und Binärdekodierung sollten getrennt bleiben. So kann die Byteauswertung mit künstlichen Payloads getestet werden, ohne dass ein PCAN-Adapter angeschlossen ist.
+Hardwarezugriff und Binärdekodierung bleiben getrennt. Die Byteauswertung wird
+mit künstlichen Payloads getestet, ohne dass ein PCAN-Adapter angeschlossen ist.
 
 ## 14. Checkliste für spätere Änderungen
 
 - [ ] Richtige CAN-ID anhand der Inverter-Dokumentation bestätigen.
 - [ ] Bedeutung von `0x1A000001` und `0x1A000003` dokumentieren.
-- [ ] Extended-ID-Flag prüfen.
-- [ ] DLC beziehungsweise Payload-Länge prüfen.
-- [ ] Endianness bestätigen.
+- [x] Extended-ID-Flag prüfen (`Message.matches`).
+- [x] DLC beziehungsweise Payload-Länge prüfen (`Signal.decode`).
+- [ ] Endianness bestätigen (je Signal über `format` einstellbar).
 - [ ] Signed/unsigned bestätigen.
 - [ ] Temperaturfaktor und Einheit bestätigen.
 - [ ] Physikalisch gültigen Temperaturbereich festlegen.
-- [ ] Zeitstempel statt reiner Sample-Nummern ergänzen.
-- [ ] Kontrolliertes Stoppen des Empfangsthreads implementieren.
-- [ ] Decoder-Unit-Tests mit bekannten Telegrammen anlegen.
-- [ ] Optional CAN-Hardwarefilter für die benötigte ID konfigurieren.
+- [x] Zeitstempel statt reiner Sample-Nummern ergänzen (`Reading`).
+- [x] Kontrolliertes Stoppen des Empfangsthreads implementieren (`SignalMonitor.stop`).
+- [x] Decoder-Unit-Tests mit bekannten Telegrammen anlegen (`tests/`).
+- [x] CAN-Hardwarefilter für die benötigten IDs konfigurieren (`Message.can_filter`).
 - [ ] Optional Messwerte mit Zeitstempel in CSV protokollieren.
 
 ## 15. Merksatz

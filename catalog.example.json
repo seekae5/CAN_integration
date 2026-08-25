@@ -1,0 +1,28 @@
+{
+  "messages": [
+    {
+      "name": "coolant",
+      "arbitration_id": "0x1A000021",
+      "extended": true,
+      "description": "Kühlmitteltemperatur und -druck",
+      "source": "BEISPIEL - keine gemessene Zuordnung, hier die eigene Quelle eintragen",
+      "signals": [
+        {
+          "name": "coolant_temperature",
+          "offset": 0,
+          "format": "<h",
+          "scale": 0.1,
+          "unit": "°C",
+          "description": "signed, damit Temperaturen unter 0 Grad darstellbar sind"
+        },
+        {
+          "name": "coolant_pressure",
+          "offset": 2,
+          "format": "<H",
+          "scale": 0.001,
+          "unit": "bar"
+        }
+      ]
+    }
+  ]
+}

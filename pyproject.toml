@@ -3,9 +3,9 @@ requires = ["setuptools>=69"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "can-temperature"
+name = "can-integration"
 version = "0.1.0"
-description = "Schlanke Temperaturmessung für CAN-Sensoren"
+description = "Schlanker CAN-Zugriff für Prüfstandsmessungen"
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
@@ -19,4 +19,4 @@ Repository = "https://github.com/seekae5/CAN_integration"
 where = ["src"]
 
 [tool.setuptools.package-data]
-can_temperature = ["py.typed"]
+can_integration = ["py.typed"]

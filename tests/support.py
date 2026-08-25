@@ -7,44 +7,54 @@ import time
 from types import SimpleNamespace
 from typing import Any
 
+#: Payloads of the <4H inverter telegrams, temperature in bytes 6-7.
+PAYLOAD_50_CELSIUS = bytes.fromhex("64 00 C8 00 2C 01 88 13")
+PAYLOAD_82_CELSIUS = bytes.fromhex("00 00 00 00 00 00 66 20")
 
-def message(
+#: motor_temperature carries its temperature in bytes 0-1.
+PAYLOAD_MOTOR_35_CELSIUS = bytes.fromhex("C8 0D 00 00 00 00 00 00")
+
+
+def frame(
     arbitration_id: int,
     data: bytes,
     *,
     extended: bool = True,
     timestamp: float = 0.0,
+    error: bool = False,
+    remote: bool = False,
 ) -> SimpleNamespace:
+    """A stand-in for ``can.Message`` with only the attributes we read."""
     return SimpleNamespace(
         arbitration_id=arbitration_id,
         data=data,
         is_extended_id=extended,
-        is_error_frame=False,
-        is_remote_frame=False,
+        is_error_frame=error,
+        is_remote_frame=remote,
         timestamp=timestamp,
     )
 
 
 class FakeBus:
-    """Hands out prepared messages, then keeps timing out like a quiet bus."""
+    """Hands out prepared frames, then keeps timing out like a quiet bus."""
 
     def __init__(
         self,
-        messages: list[Any],
+        frames: list[Any],
         *,
         error: Exception | None = None,
         error_gate: threading.Event | None = None,
     ) -> None:
-        self.messages = list(messages)
+        self.frames = list(frames)
         self.error = error
-        # Without a gate the error is raised as soon as the messages run out;
+        # Without a gate the error is raised as soon as the frames run out;
         # with one, the test decides when the bus starts failing.
         self.error_gate = error_gate
         self.shutdown_calls = 0
 
     def recv(self, timeout: float | None = None) -> Any:
-        if self.messages:
-            return self.messages.pop(0)
+        if self.frames:
+            return self.frames.pop(0)
         if self.error is not None and (
             self.error_gate is None or self.error_gate.is_set()
         ):
@@ -56,3 +66,13 @@ class FakeBus:
 
     def shutdown(self) -> None:
         self.shutdown_calls += 1
+
+
+def wait_for(condition, timeout: float = 2.0) -> bool:
+    """Give the receiving thread a bounded amount of time to catch up."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if condition():
+            return True
+        time.sleep(0.005)
+    return False
