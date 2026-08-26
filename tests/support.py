@@ -51,6 +51,9 @@ class FakeBus:
         # with one, the test decides when the bus starts failing.
         self.error_gate = error_gate
         self.shutdown_calls = 0
+        #: Frames handed to ``send``, so a test can assert what went out.
+        self.sent: list[Any] = []
+        self.send_error: Exception | None = None
 
     def recv(self, timeout: float | None = None) -> Any:
         if self.frames:
@@ -63,6 +66,11 @@ class FakeBus:
         # Do not spin: an empty bus behaves like one that stays silent.
         time.sleep(min(timeout or 0.0, 0.01))
         return None
+
+    def send(self, message: Any, timeout: float | None = None) -> None:
+        if self.send_error is not None:
+            raise self.send_error
+        self.sent.append(message)
 
     def shutdown(self) -> None:
         self.shutdown_calls += 1

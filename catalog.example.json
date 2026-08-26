@@ -1,27 +1,67 @@
 {
   "messages": [
     {
-      "name": "coolant",
-      "arbitration_id": "0x1A000021",
-      "extended": true,
-      "description": "Kühlmitteltemperatur und -druck",
-      "source": "BEISPIEL - keine gemessene Zuordnung, hier die eigene Quelle eintragen",
+      "name": "unknown_01000001",
+      "arbitration_id": "0x01000001",
+      "description": "Geräteerkennung / Discovery-Anfrage, Bedeutung nicht gesichert",
+      "source": "docs/CAN_Log_to_be_completed.md: 8 ASCII-Bytes 'discover', ca. alle 498-506 ms, Sicherheit hoch fuer Discovery-Charakter, aber keine echte Messgroesse -> kein numerischer Wert bekannt",
       "signals": [
         {
-          "name": "coolant_temperature",
+          "name": "payload_byte_0",
           "offset": 0,
-          "format": "<h",
-          "scale": 0.1,
-          "unit": "°C",
-          "description": "signed, damit Temperaturen unter 0 Grad darstellbar sind"
-        },
-        {
-          "name": "coolant_pressure",
-          "offset": 2,
-          "format": "<H",
-          "scale": 0.001,
-          "unit": "bar"
+          "format": "<B",
+          "description": "erstes Byte des Payloads; die Nachricht traegt durchgehend den ASCII-Text 'discover', keine skalierte Messgroesse"
         }
+      ]
+    },
+    {
+      "name": "unknown_01100000",
+      "arbitration_id": "0x01100000",
+      "description": "Langsames Diagnose-/Erkennungstelegramm, Bedeutung nicht gesichert",
+      "source": "docs/CAN_Log_to_be_completed.md: 8 Bytes, ueberwiegend 0; einziger beobachteter veraenderlicher Wert in den letzten 2 Bytes, Big-Endian, Werte 159-423 je nach Messfenster; Zykluszeit ca. 1043 ms",
+      "signals": [
+        {
+          "name": "value",
+          "offset": 6,
+          "format": ">H",
+          "description": "vermutlich der einzige veraenderliche Wert dieses Telegramms, Big-Endian, Bedeutung und Skalierung unbekannt"
+        }
+      ]
+    },
+    {
+      "name": "unknown_1A000006",
+      "arbitration_id": "0x1A000006",
+      "description": "Schnelle elektrische Mess-/Reglergroessen, Bedeutung nicht gesichert",
+      "source": "docs/CAN_Log_to_be_completed.md: 4 x Int/UInt16 LE, im inaktiven Regelzustand teils eingefroren (98; 481; 0; 0), im aktiven Zustand stark dynamisch; Zykluszeit 10-35 ms",
+      "signals": [
+        {"name": "word_1", "offset": 0, "format": "<h"},
+        {"name": "word_2", "offset": 2, "format": "<H"},
+        {"name": "word_3", "offset": 4, "format": "<h"},
+        {"name": "word_4", "offset": 6, "format": "<H"}
+      ]
+    },
+    {
+      "name": "unknown_1A000007",
+      "arbitration_id": "0x1A000007",
+      "description": "Aktive Motor-/Reglergroessen, Bedeutung nicht gesichert",
+      "source": "docs/CAN_Log_to_be_completed.md: 4 x Int/UInt16 LE, im inaktiven Regelzustand alle vier Woerter 0, im aktiven Zustand alle vier dynamisch; Zykluszeit 10-35 ms",
+      "signals": [
+        {"name": "word_1", "offset": 0, "format": "<h"},
+        {"name": "word_2", "offset": 2, "format": "<H"},
+        {"name": "word_3", "offset": 4, "format": "<h"},
+        {"name": "word_4", "offset": 6, "format": "<H"}
+      ]
+    },
+    {
+      "name": "unknown_1A000008",
+      "arbitration_id": "0x1A000008",
+      "description": "Drehzahlbezogene Groesse plus Last-/Strom-/Drehmomentwert, Bedeutung nicht gesichert",
+      "source": "docs/CAN_Log_to_be_completed.md: 4 x UInt16 LE, Wort 1 schaltet zwischen 0 und 243 (moeglicher Last-/Sollwert), Wort 3 bildet stabile drehzahltypische Plateaus (7796-11595); Zykluszeit 10-35 ms",
+      "signals": [
+        {"name": "word_1", "offset": 0, "format": "<H"},
+        {"name": "word_2", "offset": 2, "format": "<H"},
+        {"name": "word_3", "offset": 4, "format": "<H"},
+        {"name": "word_4", "offset": 6, "format": "<H"}
       ]
     }
   ]

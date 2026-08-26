@@ -262,10 +262,19 @@ DEFAULT_CATALOG = Catalog(BUILTIN_MESSAGES)
 
 
 _MESSAGE_KEYS = frozenset(
-    {"name", "arbitration_id", "signals", "extended", "description", "source"}
+    {
+        "name",
+        "arbitration_id",
+        "signals",
+        "extended",
+        "description",
+        "source",
+        "writable",
+        "length",
+    }
 )
 _SIGNAL_KEYS = frozenset(
-    {"name", "offset", "format", "scale", "bias", "unit", "description"}
+    {"name", "offset", "format", "scale", "bias", "unit", "description", "default"}
 )
 
 

@@ -1,4 +1,10 @@
-"""Bus lifecycle shared by the blocking reader and the background monitor."""
+"""Bus lifecycle shared by the blocking reader and the background monitor.
+
+Both directions of the bus run through here: :meth:`BusConnection.read`
+receives one filtered telegram, :meth:`BusConnection.send` puts a command
+telegram on the wire. Only messages the catalog declares ``writable`` can be
+sent.
+"""
 
 from __future__ import annotations
 
@@ -9,7 +15,7 @@ from typing import Any, NamedTuple
 import can
 
 from .catalog import DEFAULT_CATALOG, Catalog
-from .signals import CanFrame, Message
+from .signals import CanFrame, Message, resolve_signal
 
 DEFAULT_INTERFACE = "pcan"
 DEFAULT_CHANNEL = "PCAN_USBBUS1"
@@ -113,6 +119,57 @@ class BusConnection:
         if frame.is_error_frame or frame.is_remote_frame:
             return None
         return self._by_key.get((frame.arbitration_id, bool(frame.is_extended_id)))
+
+    def message(self, message: str | Message) -> Message:
+        """Resolve a name against the catalog; a ready-made message passes."""
+        if isinstance(message, Message):
+            return message
+        return self.catalog[message]
+
+    def send(
+        self,
+        message: str | Message,
+        values: Mapping[str, float],
+        *,
+        timeout: float | None = None,
+    ) -> None:
+        """Encode ``values`` into ``message`` and put it on the bus.
+
+        The message need not be one of the monitored ones -- receive filters
+        do not restrict sending. It does have to be declared ``writable``,
+        which is what keeps a command from being written onto a status ID.
+        """
+        definition = self.message(message)
+        payload = definition.encode(values)
+        frame = can.Message(
+            arbitration_id=definition.arbitration_id,
+            is_extended_id=definition.extended,
+            data=payload,
+        )
+        self.connect().send(frame, timeout=timeout)
+
+    def send_signal(
+        self,
+        name: str,
+        value: float,
+        *,
+        timeout: float | None = None,
+    ) -> Message:
+        """Set one signal by name and send its message. Returns the message."""
+        writable = [
+            definition
+            for definition in self.catalog.values()
+            if definition.writable
+        ]
+        if not writable:
+            raise ValueError(
+                f"cannot set {name!r}: the catalog contains no writable "
+                f"message; declare the command telegram with writable=True"
+            )
+
+        definition, signal = resolve_signal(writable, name)
+        self.send(definition, {signal.name: value}, timeout=timeout)
+        return definition
 
     def read(self, timeout: float) -> Reading | None:
         """Wait up to ``timeout`` for one matching frame and decode it.

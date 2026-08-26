@@ -33,6 +33,10 @@ class SignalMonitor:
     Values are addressed by signal name. A name stays plain as long as only
     one monitored message provides it, and becomes qualified
     (``"inverter_status_3.temperature"``) as soon as two do.
+
+    Sending goes through ``connection``: the receiving thread only ever calls
+    ``recv``, so a command may be written from the measurement thread while
+    the monitor keeps draining the bus.
     """
 
     def __init__(
@@ -94,6 +98,11 @@ class SignalMonitor:
     @property
     def messages(self) -> tuple[Message, ...]:
         return self._connection.messages
+
+    @property
+    def connection(self) -> BusConnection:
+        """The bus underneath -- the way out for sending while monitoring."""
+        return self._connection
 
     @property
     def signal_names(self) -> tuple[str, ...]:

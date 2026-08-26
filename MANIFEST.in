@@ -1,7 +1,4 @@
 prune tests
-prune examples
 prune docs
-prune Orientierung
-prune .idea
 exclude config.example.json
 exclude catalog.example.json
