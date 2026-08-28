@@ -1,16 +1,33 @@
 {
   "messages": [
     {
-      "name": "unknown_01000001",
+      "name": "broadcast_command",
+      "arbitration_id": "0x01000000",
+      "writable": true,
+      "length": 8,
+      "description": "Broadcast-Kommando an alle Geraete am Bus (arm/disarm PPM, Errorlog)",
+      "source": "docs/CAN_Protocol_Uebersicht.md Abschnitt 5/15: DLC 8, Byte 0 waehlt die Aktion, Byte 1..7 = 0; Herstellerdoku, nicht am Pruefstand plausibilisiert",
+      "signals": [
+        {
+          "name": "command",
+          "offset": 0,
+          "format": "<B",
+          "default": 0,
+          "description": "0 = disarm PPM, 1 = arm PPM, 2 = trigger_Errorlog"
+        }
+      ]
+    },
+    {
+      "name": "discovery_request",
       "arbitration_id": "0x01000001",
-      "description": "Geräteerkennung / Discovery-Anfrage, Bedeutung nicht gesichert",
-      "source": "docs/CAN_Log_to_be_completed.md: 8 ASCII-Bytes 'discover', ca. alle 498-506 ms, Sicherheit hoch fuer Discovery-Charakter, aber keine echte Messgroesse -> kein numerischer Wert bekannt",
+      "description": "PersyCAN Discovery-/Heartbeat-Telegramm der GUI an alle Geraete",
+      "source": "docs/CAN_Protocol_Uebersicht.md Abschnitt 7.2: DLC 8, konstante ASCII-Nutzlast 'discover' (64 69 73 63 6F 76 65 72), alle 500 ms; ohne 'discover' > 2 s faellt der Inverter auf sein gespeichertes Protokoll zurueck",
       "signals": [
         {
           "name": "payload_byte_0",
           "offset": 0,
           "format": "<B",
-          "description": "erstes Byte des Payloads; die Nachricht traegt durchgehend den ASCII-Text 'discover', keine skalierte Messgroesse"
+          "description": "erstes Byte der konstanten ASCII-Nutzlast 'discover'; keine skalierte Messgroesse"
         }
       ]
     },
@@ -18,7 +35,7 @@
       "name": "unknown_01100000",
       "arbitration_id": "0x01100000",
       "description": "Langsames Diagnose-/Erkennungstelegramm, Bedeutung nicht gesichert",
-      "source": "docs/CAN_Log_to_be_completed.md: 8 Bytes, ueberwiegend 0; einziger beobachteter veraenderlicher Wert in den letzten 2 Bytes, Big-Endian, Werte 159-423 je nach Messfenster; Zykluszeit ca. 1043 ms",
+      "source": "docs/CAN_Log_to_be_completed.md: 8 Bytes, ueberwiegend 0; einziger beobachteter veraenderlicher Wert in den letzten 2 Bytes, Big-Endian, Werte 159-423 je nach Messfenster; Zykluszeit ca. 1043 ms; nicht in der Protokoll-Uebersicht enthalten",
       "signals": [
         {
           "name": "value",
@@ -29,39 +46,141 @@
       ]
     },
     {
-      "name": "unknown_1A000006",
+      "name": "inverter_command",
+      "arbitration_id": "0x0A000000",
+      "writable": true,
+      "length": 8,
+      "description": "Parameter an ein einzelnes Geraet schreiben (RX-Basis 0x0n000000, hier n=A als Beispiel)",
+      "source": "docs/CAN_Protocol_Uebersicht.md Abschnitt 4: DLC 8, Byte 0..1 waehlt den Parameter, Byte 2..3 traegt den Wert (little-endian), Byte 4..7 ignoriert; Herstellerdoku, nicht am Pruefstand plausibilisiert",
+      "signals": [
+        {
+          "name": "command_id",
+          "offset": 0,
+          "format": "<H",
+          "description": "Parameterauswahl; bekannt: 0x0110 = RPM-Sollwert (write 16 bit), 0x0D13 = SU-Param AutoArmOnInput"
+        },
+        {
+          "name": "value",
+          "offset": 2,
+          "format": "<H",
+          "description": "zu schreibender 16-bit-Wert, z. B. 2000 als RPM-Sollwert oder 1 zum Aktivieren von AutoArmOnInput (nach Powercycle verloren)"
+        }
+      ]
+    },
+    {
+      "name": "update_process_rx",
+      "arbitration_id": "0x0A00000A",
+      "description": "Update process - receive response request (RX-Basis 0x0n00000A)",
+      "source": "docs/CAN_Protocol_Uebersicht.md Abschnitt 4.3: DLC 8, Payload in der Quelle nicht spezifiziert ('xxx')",
+      "signals": [
+        {
+          "name": "payload_byte_0",
+          "offset": 0,
+          "format": "<B",
+          "description": "Platzhalter; Payload-Layout in der Quelle nicht dokumentiert"
+        }
+      ]
+    },
+    {
+      "name": "ppm_signal_counters",
+      "arbitration_id": "0x1A000004",
+      "description": "PPM-Rohsignal-Zaehler sowie Puls- und Pausenwert (TX-Basis 0x1n000004)",
+      "source": "docs/CAN_Protocol_Uebersicht.md Abschnitt 6.2: 4 x uint16 little-endian, Zykluszeit 10 ms; Herstellerdoku, nicht am Pruefstand plausibilisiert",
+      "signals": [
+        {"name": "raw_signal_count", "offset": 0, "format": "<H", "description": "Faktor 1"},
+        {"name": "valid_signal_count", "offset": 2, "format": "<H", "description": "Faktor 1"},
+        {"name": "raw_pulse_value", "offset": 4, "format": "<H", "scale": 1e-07, "unit": "s", "description": "Rohschritt 100 ns/Bit"},
+        {"name": "raw_pause_value", "offset": 6, "format": "<H", "scale": 1e-07, "unit": "s", "description": "Rohschritt 100 ns/Bit"}
+      ]
+    },
+    {
+      "name": "ppwm_status",
+      "arbitration_id": "0x1A000005",
+      "description": "PPWM-Status (armed/inverted/state/valid) und PPWM-Signalwerte (TX-Basis 0x1n000005)",
+      "source": "docs/CAN_Protocol_Uebersicht.md Abschnitt 6.3: zwei bytegepackte Statusworte plus zwei uint16, Zykluszeit 10 ms; Herstellerdoku, nicht am Pruefstand plausibilisiert",
+      "signals": [
+        {"name": "armed", "offset": 0, "format": "<B", "description": "bool"},
+        {"name": "inverted", "offset": 1, "format": "<B", "description": "bool"},
+        {"name": "state", "offset": 2, "format": "<B", "description": "PPWM_state: 0 disarmed, 1 invalid, 2 armed, 3 armed_invalid, 4 armed_valid, 5 enabled_always"},
+        {"name": "valid", "offset": 3, "format": "<B", "description": "bool"},
+        {"name": "ppwm_signal_raw", "offset": 4, "format": "<H", "description": "uint16, Faktor 1"},
+        {"name": "ppwm_signal", "offset": 6, "format": "<H", "description": "uint16, Faktor 1"}
+      ]
+    },
+    {
+      "name": "current_control_dq",
       "arbitration_id": "0x1A000006",
-      "description": "Schnelle elektrische Mess-/Reglergroessen, Bedeutung nicht gesichert",
-      "source": "docs/CAN_Log_to_be_completed.md: 4 x Int/UInt16 LE, im inaktiven Regelzustand teils eingefroren (98; 481; 0; 0), im aktiven Zustand stark dynamisch; Zykluszeit 10-35 ms",
+      "description": "Feldorientierte Stroeme: Ist- und Zielwert fuer Id und Iq (TX-Basis 0x1n000006)",
+      "source": "docs/CAN_Protocol_Uebersicht.md Abschnitt 6.4: 4 x 16-bit, Faktor 100, Zykluszeit 100 ms; Vorzeichen als signed angenommen; Herstellerdoku, nicht am Pruefstand plausibilisiert",
       "signals": [
-        {"name": "word_1", "offset": 0, "format": "<h"},
-        {"name": "word_2", "offset": 2, "format": "<H"},
-        {"name": "word_3", "offset": 4, "format": "<h"},
-        {"name": "word_4", "offset": 6, "format": "<H"}
+        {"name": "id_flt", "offset": 0, "format": "<h", "scale": 0.01, "description": "Id gefiltert"},
+        {"name": "iq_flt", "offset": 2, "format": "<h", "scale": 0.01, "description": "Iq gefiltert"},
+        {"name": "id_trgt", "offset": 4, "format": "<h", "scale": 0.01, "description": "Id Zielwert"},
+        {"name": "iq_trgt", "offset": 6, "format": "<h", "scale": 0.01, "description": "Iq Zielwert"}
       ]
     },
     {
-      "name": "unknown_1A000007",
+      "name": "voltage_control_dq",
       "arbitration_id": "0x1A000007",
-      "description": "Aktive Motor-/Reglergroessen, Bedeutung nicht gesichert",
-      "source": "docs/CAN_Log_to_be_completed.md: 4 x Int/UInt16 LE, im inaktiven Regelzustand alle vier Woerter 0, im aktiven Zustand alle vier dynamisch; Zykluszeit 10-35 ms",
+      "description": "Reglerspannungen Ud/Uq und deren Fehlerintegrale (TX-Basis 0x1n000007)",
+      "source": "docs/CAN_Protocol_Uebersicht.md Abschnitt 6.5: 4 x 16-bit, Faktor 100 (Ud/Uq) bzw. 1000 (Fehlerintegrale), Zykluszeit 100 ms; Vorzeichen als signed angenommen; Herstellerdoku, nicht am Pruefstand plausibilisiert",
       "signals": [
-        {"name": "word_1", "offset": 0, "format": "<h"},
-        {"name": "word_2", "offset": 2, "format": "<H"},
-        {"name": "word_3", "offset": 4, "format": "<h"},
-        {"name": "word_4", "offset": 6, "format": "<H"}
+        {"name": "ud", "offset": 0, "format": "<h", "scale": 0.01, "description": "Ud"},
+        {"name": "uq", "offset": 2, "format": "<h", "scale": 0.01, "description": "Uq"},
+        {"name": "ud_error_integral", "offset": 4, "format": "<h", "scale": 0.001, "description": "Ud-Fehlerintegral"},
+        {"name": "uq_error_integral", "offset": 6, "format": "<h", "scale": 0.001, "description": "Uq-Fehlerintegral"}
       ]
     },
     {
-      "name": "unknown_1A000008",
+      "name": "motion_control_state",
       "arbitration_id": "0x1A000008",
-      "description": "Drehzahlbezogene Groesse plus Last-/Strom-/Drehmomentwert, Bedeutung nicht gesichert",
-      "source": "docs/CAN_Log_to_be_completed.md: 4 x UInt16 LE, Wort 1 schaltet zwischen 0 und 243 (moeglicher Last-/Sollwert), Wort 3 bildet stabile drehzahltypische Plateaus (7796-11595); Zykluszeit 10-35 ms",
+      "description": "Motion-Control-State, Error-State, interne Zykluszeit und SW-Version (TX-Basis 0x1n000008)",
+      "source": "docs/CAN_Protocol_Uebersicht.md Abschnitt 6.6: 4 x uint16, Zykluszeit 100 ms; Herstellerdoku, nicht am Pruefstand plausibilisiert",
       "signals": [
-        {"name": "word_1", "offset": 0, "format": "<H"},
-        {"name": "word_2", "offset": 2, "format": "<H"},
-        {"name": "word_3", "offset": 4, "format": "<H"},
-        {"name": "word_4", "offset": 6, "format": "<H"}
+        {"name": "motion_ctrl_state", "offset": 0, "format": "<H", "description": "0x0000 STO, 0x00F2 waitingForSetpoint (STO/ASC per Parameter), 0x00F3 ControlActive, 0xFF00 HardFault"},
+        {"name": "error_state", "offset": 2, "format": "<H", "description": "0 OK, 30 OVERCURRENT_PROTECTION, 41 PPM_INVALID, 42 PPM_TIMEOUT, 43 PPM_INVERSION_FAULT, 44 OVERTEMPERATURE, 45 PPM_SIGNAL_NOISY"},
+        {"name": "max_cycle_time", "offset": 4, "format": "<H", "description": "max_cycle_time (internal quality), Faktor 1"},
+        {"name": "sw_version", "offset": 6, "format": "<H", "description": "gepackt dev:4 patch:4 minor:4 major:4"}
+      ]
+    },
+    {
+      "name": "update_process_request",
+      "arbitration_id": "0x1A00000B",
+      "description": "Update process request des Inverters (TX-Basis 0x1n00000B)",
+      "source": "docs/CAN_Protocol_Uebersicht.md Abschnitt 6.7: Zykluszeit 2 ms, Signal-/Payload-Details in der Quelle nicht angegeben",
+      "signals": [
+        {
+          "name": "payload_byte_0",
+          "offset": 0,
+          "format": "<B",
+          "description": "Platzhalter; Payload-Layout in der Quelle nicht dokumentiert"
+        }
+      ]
+    },
+    {
+      "name": "discovery_token_response",
+      "arbitration_id": "0x1A00000D",
+      "description": "Token-Antwort eines noch nicht initialisierten Inverters auf 'discover' (0x1n00000D, n=A..F)",
+      "source": "docs/CAN_Protocol_Uebersicht.md Abschnitt 7.3: DLC 8, drei uint16 little-endian als 48-bit-Token plus ein Debug-/Status-Wort; RX-Basis = responseId & 0x0F000000",
+      "signals": [
+        {"name": "token_word_0", "offset": 0, "format": "<H", "description": "Token-Wort 0, little-endian; nur speichern/vergleichen/zurueckschreiben"},
+        {"name": "token_word_1", "offset": 2, "format": "<H", "description": "Token-Wort 1, little-endian"},
+        {"name": "token_word_2", "offset": 4, "format": "<H", "description": "Token-Wort 2, little-endian"},
+        {"name": "status", "offset": 6, "format": "<H", "description": "Debug/Status; kann von der GUI ignoriert werden"}
+      ]
+    },
+    {
+      "name": "error_log",
+      "arbitration_id": "0x1A00000F",
+      "description": "Error log des Inverters, bei Fehler oder auf Anfrage (TX-Basis 0x1n00000F)",
+      "source": "docs/CAN_Protocol_Uebersicht.md Abschnitt 6.9: Zykluszeit 10 ms bei Fehler oder Anforderung (u. a. Ueberstrom), Signal-/Payload-Details in der Quelle nicht angegeben",
+      "signals": [
+        {
+          "name": "payload_byte_0",
+          "offset": 0,
+          "format": "<B",
+          "description": "Platzhalter; Payload-Layout in der Quelle nicht dokumentiert"
+        }
       ]
     }
   ]

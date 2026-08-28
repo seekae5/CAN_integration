@@ -136,36 +136,45 @@ Big-Endian-`int32` der Wägezelle in dieselbe Bibliothek.
 
 ### Definitionen nur für einen Prüfstand
 
-Was nur an einem Aufbau gilt oder noch nicht gesichert ist, gehört nicht ins
-Package, sondern in eine JSON-Datei neben die Messkonfiguration — siehe
-[catalog.example.json](catalog.example.json). Sie sammelt aktuell die IDs aus
-der CAN-Log-Auswertung ([docs/CAN_Log_to_be_completed.md](docs/CAN_Log_to_be_completed.md)),
-für die noch **keine** Bedeutung feststeht; die drei dort bereits geklärten IDs
-(`inverter_status_3`, `inverter_speed`, `motor_temperature`) stehen stattdessen
-im eingebauten Katalog:
+Was nur an einem Aufbau gilt oder noch nicht am Prüfstand plausibilisiert ist,
+gehört nicht ins Package, sondern in eine JSON-Datei neben die Messkonfiguration
+— siehe [catalog.example.json](catalog.example.json). Sie hält eine
+Nachschlagetabelle über die CAN-IDs des Persystems CAN Protocol
+([docs/CAN_Protocol_Uebersicht.md](docs/CAN_Protocol_Uebersicht.md)): Broadcast-
+und Discovery-Telegramme, den Schreib-Kanal an ein Gerät und die zyklische
+Telemetrie. Die Layouts stammen aus der Herstellerdoku und sind **nicht** am
+Prüfstand gegengemessen; jeder Eintrag nennt seine `source` mit Abschnitt.
+Die IDs verwenden `n = A` als Beispiel-Geräte-Nibble (RX-Basis `0x0n000000`,
+TX-Basis `0x1n......`, `n = A…F`). Die drei bereits am Prüfstand geklärten IDs
+(`inverter_status_3` = `0x1A000003`, `inverter_speed` = `0x1A00000C`,
+`motor_temperature` = `0x1A000013`) stehen stattdessen im eingebauten Katalog
+und fehlen hier bewusst, damit die Datei neben dem Package ladbar bleibt.
+Zusätzlich enthält sie `unknown_01100000` aus der CAN-Log-Auswertung
+([docs/CAN_Log_to_be_completed.md](docs/CAN_Log_to_be_completed.md)), das in der
+Protokoll-Übersicht nicht vorkommt.
 
 ```json
 {
   "messages": [
     {
-      "name": "unknown_1A000006",
+      "name": "current_control_dq",
       "arbitration_id": "0x1A000006",
-      "description": "Schnelle elektrische Mess-/Reglergroessen, Bedeutung nicht gesichert",
-      "source": "docs/CAN_Log_to_be_completed.md: 4 x Int/UInt16 LE, im inaktiven Regelzustand teils eingefroren (98; 481; 0; 0), im aktiven Zustand stark dynamisch; Zykluszeit 10-35 ms",
+      "description": "Feldorientierte Stroeme: Ist- und Zielwert fuer Id und Iq (TX-Basis 0x1n000006)",
+      "source": "docs/CAN_Protocol_Uebersicht.md Abschnitt 6.4: 4 x 16-bit, Faktor 100, Zykluszeit 100 ms; Herstellerdoku, nicht am Pruefstand plausibilisiert",
       "signals": [
-        {"name": "word_1", "offset": 0, "format": "<h"},
-        {"name": "word_2", "offset": 2, "format": "<H"},
-        {"name": "word_3", "offset": 4, "format": "<h"},
-        {"name": "word_4", "offset": 6, "format": "<H"}
+        {"name": "id_flt", "offset": 0, "format": "<h", "scale": 0.01},
+        {"name": "iq_flt", "offset": 2, "format": "<h", "scale": 0.01},
+        {"name": "id_trgt", "offset": 4, "format": "<h", "scale": 0.01},
+        {"name": "iq_trgt", "offset": 6, "format": "<h", "scale": 0.01}
       ]
     }
   ]
 }
 ```
 
-Namen bleiben absichtlich neutral (`unknown_<ID>`), solange die physikalische
-Bedeutung nicht bestätigt ist; sobald sie es ist, wandert der Eintrag mit
-einem sprechenden Namen in `catalog.py`.
+Namen bleiben neutral (`unknown_<ID>`), solange auch die Herstellerdoku keine
+Bedeutung nennt; sobald ein Layout am Prüfstand plausibilisiert ist, wandert der
+Eintrag mit einem sprechenden Namen in `catalog.py`.
 
 Die Konfiguration verweist mit `"catalog"` darauf; der Pfad wird relativ zur
 Konfigurationsdatei aufgelöst, das Messverzeichnis bleibt also umziehbar.

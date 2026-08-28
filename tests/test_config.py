@@ -182,7 +182,7 @@ class ConfigTests(unittest.TestCase):
         )
 
         self.assertIn("motor_temperature", config.messages)
-        self.assertIn("unknown_01000001", config.catalog)
+        self.assertIn("discovery_request", config.catalog)
 
 
 if __name__ == "__main__":
