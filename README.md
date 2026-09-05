@@ -517,6 +517,32 @@ python -m can_integration.sim.cli replay CAN-Logs/0000309.TXT --interface udp_mu
 can-integration --config config.sim.example.json
 ```
 
+### Beispielskript: Telegramme mitlesen
+
+[examples/telegramme_anzeigen.py](examples/telegramme_anzeigen.py) startet die
+Simulation und liest mit `SignalReader` mit -- derselbe Code, der später am
+Prüfstand läuft:
+
+```powershell
+python examples/telegramme_anzeigen.py --sekunden 5
+```
+
+```
+16:42:30  inverter_speed       rpm_actual=0 rpm  rpm_target=0 rpm  ...
+16:42:31  inverter_speed       rpm_actual=2388 rpm  rpm_target=8700 rpm  ...  torque_actual=2511
+16:42:31  inverter_status_3    iph_rms=417  i_dc_flt=154  u_dc=392  temperature=32.74 °C
+16:42:31  inverter_speed       rpm_actual=6910 rpm  rpm_target=8700 rpm  ...  torque_actual=6733
+```
+
+`--intervall 0` zeigt jedes empfangene Telegramm statt einer Zeile je
+Viertelsekunde -- bei sechs zyklischen Telegrammen im 11-ms-Takt sind das rund
+550 Zeilen je Sekunde. Gegen die echte Hardware ist es dasselbe Skript ohne
+Simulation:
+
+```powershell
+python examples/telegramme_anzeigen.py --ohne-simulation --interface pcan --channel PCAN_USBBUS1
+```
+
 ### Richtung: wer sendet was
 
 Eine Aufzeichnung enthält beide Seiten des Busses. Telegramme, die im Log der
