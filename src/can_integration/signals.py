@@ -249,6 +249,12 @@ class Message:
     one drives a real device, so the direction has to be declared rather than
     assumed. ``length`` is the payload length to send when the device expects
     a fixed DLC (usually 8) that is longer than the declared signals.
+
+    ``cycle_time_ms`` is the repetition time a device sends this telegram at,
+    where it is known. Nothing in the receiving path depends on it -- it is
+    recorded so that a simulated device can reproduce the timing, and so that
+    a plausible staleness limit can be derived per message instead of guessed
+    globally.
     """
 
     name: str
@@ -259,6 +265,7 @@ class Message:
     source: str = ""
     writable: bool = False
     length: int | None = None
+    cycle_time_ms: float | None = None
     _by_name: Mapping[str, Signal] = field(
         init=False, repr=False, compare=False, default_factory=dict
     )
@@ -301,6 +308,12 @@ class Message:
                     f"message {self.name!r}: length {self.length} is shorter "
                     f"than the {minimum} bytes its signals occupy"
                 )
+
+        if self.cycle_time_ms is not None and self.cycle_time_ms <= 0:
+            raise ValueError(
+                f"message {self.name!r}: cycle_time_ms must be greater than "
+                f"zero, got {self.cycle_time_ms}"
+            )
 
         object.__setattr__(
             self,
@@ -369,10 +382,13 @@ class Message:
         return {signal.name: signal.decode(payload) for signal in self.signals}
 
     def encode(self, values: Mapping[str, float]) -> bytes:
-        """Build the payload of this message from physical values.
+        """Build the payload of a telegram that is about to be sent.
 
-        Every signal must either be named in ``values`` or declare a
-        ``default``. Bytes that no signal covers stay zero.
+        Refuses a message that is not declared ``writable``: writing to a
+        misread status ID drives a real device. Laying out the bytes of a
+        status telegram -- what a simulated device does when it plays the
+        other side of the bus -- goes through :meth:`build_payload`, which
+        carries no such restriction because nothing is put on the wire.
         """
         if not self.writable:
             raise ReadOnlyMessageError(
@@ -380,7 +396,16 @@ class Message:
                 f"be sent; set writable=True in its catalog entry once the "
                 f"command layout is confirmed"
             )
+        return self.build_payload(values)
 
+    def build_payload(self, values: Mapping[str, float]) -> bytes:
+        """Lay out physical values as this message's payload.
+
+        Every signal must either be named in ``values`` or declare a
+        ``default``. Bytes that no signal covers stay zero. This is the byte
+        layout on its own -- the direction of the telegram is decided by
+        :meth:`encode`.
+        """
         unknown = sorted(set(values) - set(self._by_name))
         if unknown:
             raise UnknownSignalError(

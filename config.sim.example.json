@@ -1,0 +1,8 @@
+{
+  "messages": ["inverter_speed", "current_control_dq", "voltage_control_dq"],
+  "catalog": "catalog.example.json",
+  "interface": "udp_multicast",
+  "channel": "239.74.163.2",
+  "max_age": 1.0,
+  "startup_timeout": 10.0
+}

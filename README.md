@@ -464,6 +464,76 @@ payload = bytes.fromhex("64 00 C8 00 2C 01 88 13")
 assert DEFAULT_CATALOG["inverter_status_3"].decode(payload)["temperature"] == 50.0
 ```
 
+## Simulation ohne Prüfstand
+
+Solange der reale Aufbau nicht zur Verfügung steht, spielt
+`can-integration-sim` eine echte Aufzeichnung auf einen Bus, den die Bibliothek
+liest, als käme sie vom Gerät. Die Werte stammen aus einer Messung, nicht aus
+einem Modell.
+
+```powershell
+python -m can_integration.sim.cli inspect CAN-Logs/0000309.TXT --catalog catalog.example.json
+```
+
+`inspect` sendet nichts, sondern sagt, was in der Aufzeichnung steckt: Frames,
+Zykluszeiten je CAN-ID und welche davon der Katalog beschreibt. Telegramme ohne
+Katalogeintrag werden **gemeldet, nicht verworfen** -- die Liste ist genau die
+noch offene Arbeit am Katalog.
+
+```powershell
+python -m can_integration.sim.cli replay CAN-Logs/0000309.TXT --loop
+```
+
+`replay` spielt zeitrichtig ab. Im selben Prozess genügt das eingebaute
+Interface `virtual`:
+
+```python
+from can_integration import Device, load_json
+from can_integration.sim import LogPlayer, Recording
+
+catalog = load_json("catalog.example.json")
+player = LogPlayer(
+    Recording.from_file("CAN-Logs/0000309.TXT"),
+    interface="virtual", channel="sim", loop=True, catalog=catalog,
+)
+player.start()
+with Device(["inverter_speed"], interface="virtual", channel="sim",
+            catalog=catalog) as device:
+    print(device.get("rpm_actual"))
+player.stop()
+```
+
+Für zwei Terminals reicht `virtual` nicht -- es verbindet nur Busse innerhalb
+eines Prozesses. Unter macOS und Windows ist `udp_multicast` der Weg
+(`pip install "can-integration[sim]"`), unter Linux alternativ `vcan`. Das
+Messwerkzeug wählt Interface und Kanal über eine Konfigurationsdatei; dafür
+liegt [config.sim.example.json](config.sim.example.json) bereit:
+
+```powershell
+# Terminal 1
+python -m can_integration.sim.cli replay CAN-Logs/0000309.TXT --interface udp_multicast --channel 239.74.163.2 --loop
+
+# Terminal 2
+can-integration --config config.sim.example.json
+```
+
+### Richtung: wer sendet was
+
+Eine Aufzeichnung enthält beide Seiten des Busses. Telegramme, die im Log der
+Host gesendet hat, spielt `replay` deshalb **nicht** zurück -- sonst hörte die
+Bibliothek ihre eigene Rolle. Als Host-Telegramm gilt, was der Katalog
+`writable` nennt, plus `discovery_request`: dessen Nutzlast ist eine Konstante
+und kein Sollwert, gesendet wird es trotzdem von der GUI. `--direction all`
+schaltet den Filter ab, wenn es um die Protokollanalyse und nicht um eine
+Messung geht.
+
+### Was der Replay nicht kann
+
+Eine Aufzeichnung antwortet nicht. Ein geschriebener Sollwert ändert am
+abgespielten Verkehr nichts. Ein Zustandsmodell, das auf Kommandos reagiert,
+ist der nächste Schritt -- der Plan dazu steht in
+[docs/CAN_Simulation_Plan.md](docs/CAN_Simulation_Plan.md).
+
 ## Aktuelle Protokollannahmen
 
 - Payload: mindestens so lang wie das letzte deklarierte Signal (`minimum_length`)
@@ -493,6 +563,9 @@ komfortabel darüber.
 | [reader.py](src/can_integration/reader.py) | `SignalReader` für Inbetriebnahme und Diagnose |
 | [config.py](src/can_integration/config.py) | `Config` aus JSON |
 | [cli.py](src/can_integration/cli.py) | der Konsolenbefehl `can-integration` |
+| [sim/logfile.py](src/can_integration/sim/logfile.py) | CL1000-Aufzeichnung lesen: `Recording`, Zykluszeiten, Katalogabdeckung |
+| [sim/replay.py](src/can_integration/sim/replay.py) | `LogPlayer`: eine Aufzeichnung zeitrichtig auf einen Bus spielen |
+| [sim/cli.py](src/can_integration/sim/cli.py) | der Konsolenbefehl `can-integration-sim` |
 
 Ein Messskript braucht davon in der Regel nur `device.py` und den Katalog.
 
@@ -514,6 +587,8 @@ python -m unittest discover -s tests -v
 | `test_reader.py` | blockierender Einzelabruf |
 | `test_monitor.py` | Hintergrundüberwachung und Fehlerverhalten |
 | `test_device.py` | die einfache Schnittstelle: `Device` und Modulfunktionen |
+| `test_sim_logfile.py` | Aufzeichnung lesen: Zeitstempel, Trennzeichen, Katalogabdeckung |
+| `test_sim_replay.py` | Replay auf einem `virtual`-Bus, gelesen von einem echten `Device` |
 
 Die technischen Erkenntnisse aus den Ursprungsskripten sind unter
 [docs/CAN_Temperaturauswertung.md](docs/CAN_Temperaturauswertung.md)

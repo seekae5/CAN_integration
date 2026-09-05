@@ -271,6 +271,7 @@ _MESSAGE_KEYS = frozenset(
         "source",
         "writable",
         "length",
+        "cycle_time_ms",
     }
 )
 _SIGNAL_KEYS = frozenset(
