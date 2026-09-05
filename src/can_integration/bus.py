@@ -8,6 +8,7 @@ sent.
 
 from __future__ import annotations
 
+import threading
 import time
 from collections.abc import Iterable, Mapping, Sequence
 from typing import Any, NamedTuple
@@ -84,6 +85,10 @@ class BusConnection:
         self._by_key = {definition.key: definition for definition in definitions}
         self._bus = bus
         self._owns_bus = bus is None
+        # Gesendet wird aus dem Messthread und -- beim Auslösen des sicheren
+        # Zustands -- aus dem Empfangsthread. Zwei Telegramme dürfen sich
+        # dabei nicht überholen.
+        self._send_lock = threading.Lock()
         self._bus_config: dict[str, Any] = {
             "interface": DEFAULT_INTERFACE if interface is None else interface,
             "channel": DEFAULT_CHANNEL if channel is None else channel,
@@ -146,7 +151,8 @@ class BusConnection:
             is_extended_id=definition.extended,
             data=payload,
         )
-        self.connect().send(frame, timeout=timeout)
+        with self._send_lock:
+            self.connect().send(frame, timeout=timeout)
 
     def send_signal(
         self,

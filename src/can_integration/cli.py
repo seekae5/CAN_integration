@@ -22,6 +22,7 @@ from pathlib import Path
 from .bus import DEFAULT_BITRATE, DEFAULT_CHANNEL, SignalTimeoutError
 from .config import Config
 from .device import Device
+from .safety import SafeStateError
 from .reader import SignalReader
 from .signals import InvalidFrameError, InvalidValueError, Message
 
@@ -105,20 +106,52 @@ def format_values(definition: Message, values: dict[str, float]) -> str:
 def send_setpoints(config: Config, assignments: list[str]) -> int:
     """Sollwerte senden und beenden -- die Inbetriebnahme des Schreibwegs."""
     values = [parse_assignment(text) for text in assignments]
-    with Device.from_config(config) as device:
+    if config.safe_state is not None:
+        # Wichtig zu wissen, bevor man sich wundert, warum der Sollwert nicht
+        # stehen bleibt: beim Verlassen geht der sichere Zustand raus.
+        print(
+            "Hinweis: die Konfiguration nennt einen sicheren Zustand "
+            f"({', '.join(config.safe_state.message_names)}). Er wird nach dem "
+            "Senden ausgeloest, der Sollwert bleibt also nicht stehen."
+        )
+
+    device = Device.from_config(config)
+    device.start()
+    failed = False
+    stop_error: SafeStateError | None = None
+    try:
         for name, value in values:
             try:
                 device.set(name, value)
             except (LookupError, ValueError) as error:
                 print(f"{name}: {error}", file=sys.stderr)
-                return 1
+                failed = True
+                break
             print(f"gesendet: {name} = {value:g}")
-    return 0
+    finally:
+        try:
+            device.stop()
+        except SafeStateError as error:
+            stop_error = error
+
+    if stop_error is not None:
+        print(f"ACHTUNG: {stop_error}", file=sys.stderr)
+        return 1
+    if device.last_safe_state is not None:
+        print(device.last_safe_state)
+    return 1 if failed else 0
 
 
 def watch(config: Config, timeout: float) -> int:
     """Jedes empfangene Telegramm ausgeben, bis Strg+C kommt."""
     definitions = {message.name: message for message in config.definitions}
+    if config.limit_rules or config.safe_state is not None:
+        # Das Diagnosewerkzeug liest nur; Grenzwerte und der sichere Zustand
+        # brauchen ein Device, nicht einen Reader.
+        print(
+            "Hinweis: --config nennt Grenzwerte oder einen sicheren Zustand. "
+            "Dieses Werkzeug setzt beides nicht durch -- dafuer ist Device da."
+        )
     print(
         f"Oeffne {config.channel or DEFAULT_CHANNEL} bei "
         f"{config.bitrate or DEFAULT_BITRATE} bit/s, warte auf "

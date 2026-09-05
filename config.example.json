@@ -1,5 +1,5 @@
 {
-  "messages": ["motor_temperature", "inverter_speed"],
+  "messages": ["motor_temperature", "inverter_speed", "inverter_status_3"],
   "catalog": "catalog.example.json",
   "interface": "pcan",
   "channel": "PCAN_USBBUS1",
@@ -7,6 +7,12 @@
   "max_age": 1.0,
   "startup_timeout": 5.0,
   "limits": {
-    "temperature": 50.0
-  }
+    "motor_temperature.temperature": 80.0,
+    "inverter_status_3.temperature": { "max": 90.0, "action": "abort" },
+    "rpm_actual": { "max": 8000, "action": "abort" },
+    "u_dc": { "min": 300, "max": 420, "action": "warn" }
+  },
+  "safe_state": [
+    { "message": "broadcast_command", "values": { "command": 0 } }
+  ]
 }

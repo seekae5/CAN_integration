@@ -249,6 +249,148 @@ statt auf 4464 überzulaufen.
 > Layout aus der Herstellerdokumentation als `writable`-Eintrag ergänzt ist.
 > Bis dahin meldet der Aufruf genau das, statt zu raten.
 
+## Grenzwerte und sicherer Zustand
+
+Ein Grenzwert, den niemand auswertet, ist eine Notiz. Und eine Messung, die
+beim Fehler nur *aufhört*, lässt einen laufenden Prüfstand laufen: der Bus
+wird geschlossen, der Inverter steht weiter auf seinem letzten Sollwert.
+Deshalb hat ein Grenzwert eine Aktion, und die Aktion hat ein Ziel.
+
+```python
+from can_integration import Device, Limit, SafeCommand, SafeState
+
+with Device(
+    ["motor_temperature", "inverter_speed"],
+    limits=[
+        Limit("temperature", maximum=80.0),
+        Limit("u_dc", minimum=300.0, maximum=420.0, action="warn"),
+    ],
+    safe_state=SafeState([SafeCommand("broadcast_command", {"command": 0})]),
+) as device:
+    ...
+```
+
+Oder in der Konfigurationsdatei:
+
+```json
+"limits": {
+  "motor_temperature.temperature": 80.0,
+  "u_dc": { "min": 300, "max": 420, "action": "warn" }
+},
+"safe_state": [
+  { "message": "broadcast_command", "values": { "command": 0 } }
+]
+```
+
+Eine blanke Zahl ist die Kurzform für eine Obergrenze. Die lange Form nennt
+beide Richtungen und die Aktion: `abort` (Vorgabe) bricht ab und löst den
+sicheren Zustand aus, `warn` schreibt die Überschreitung nur mit
+(`device.violations`).
+
+### Wann geprüft wird
+
+**Im Empfangsthread, beim Eintreffen des Telegramms** — nicht beim Auslesen.
+Eine Übertemperatur, die erst auffällt, wenn das Messskript zufällig fragt,
+ist keine Überwachung. Gemeldet wird flankengesteuert: zwanzig Telegramme über
+der Grenze ergeben eine Meldung, nicht zwanzig.
+
+Sobald Grenzwerte oder ein sicherer Zustand deklariert sind, läuft zusätzlich
+ein **Wachhund auf `max_age`**: eine überwachte Nachricht, die ausbleibt, löst
+denselben Abbruch aus wie ein überschrittener Wert. Ohne beides bleibt es beim
+bisherigen Verhalten — der veraltete Wert fällt erst beim Lesen auf.
+
+Ein Abbruch ist endgültig. Fängt sich der Wert wieder, läuft die Messung
+trotzdem nicht weiter: war der Prüfstand einmal über der Grenze, ist der Lauf
+zu Ende.
+
+### Wann der sichere Zustand rausgeht
+
+Bei **jedem** Ende des `with`-Blocks — Grenzwertverletzung, Exception, Strg+C
+und auch beim geplanten Ende. Eine Messung, die sauber endet, soll den
+Prüfstand ebenso entwaffnet zurücklassen wie eine, die abbricht. Er geht
+**vor** dem Schließen des Busses raus.
+
+**Die Reihenfolge der Telegramme ist Teil der Sicherheit.** Am
+Drehmomentprüfstand muss erst der Prüfling momentfrei werden und danach die
+Lastmaschine herunterfahren — umgekehrt beschleunigt der Prüfling gegen eine
+wegfallende Last. Ein fehlgeschlagenes Telegramm hält die Kette nicht auf: die
+übrigen werden trotzdem versucht.
+
+Jeder Eintrag wird beim Aufbau der Messung geprüft — Telegramm bekannt,
+`writable`, alle Werte kodierbar. Ein sicherer Zustand, der erst beim Auslösen
+auffliegt, ist keiner. Was tatsächlich rausging, steht in
+`device.last_safe_state`; kam nicht alles durch, wirft `stop()` einen
+`SafeStateError`.
+
+### Was das nicht ist
+
+> Der sichere Zustand geht über denselben CAN-Bus, der gerade ausgefallen sein
+> kann, und über dieselbe Software, die gerade abstürzt. Bei `kill -9` läuft er
+> gar nicht. **Er ersetzt keine mechanische oder elektrische Not-Aus-Kette.**
+> Was er kann, ist melden, ob er durchkam.
+
+Das Diagnosewerkzeug `can-integration` setzt beides nicht durch — es liest mit
+`SignalReader` und weist darauf hin, wenn die Konfiguration Grenzwerte oder
+einen sicheren Zustand nennt.
+
+## Nullpunkt und Spanne: tarieren und kalibrieren
+
+Eine Wägezelle liefert ein Gewicht, das nur so gut ist wie ihr Nullpunkt. Der
+verschiebt sich mit Temperatur, Montage und dem, was gerade am Ausleger hängt
+— er gehört vor jeden Lauf neu gemessen:
+
+```
+gemessener Wert = (gemeldeter Wert − offset) × factor
+```
+
+```python
+with Device("thrust", interface="pcan", channel="PCAN_USBBUS1") as bench:
+    bench.tare("weight", duration=2.0, tolerance=1.0)      # unbelastet
+    # 500-g-Prüfgewicht auflegen
+    bench.calibrate("weight", 500.0, reference="500 g Prüfgewicht, 2026-09-06")
+
+    print(bench.get("weight"))          # 500.0
+    for entry in bench.calibrations:    # gehört in den Kopf der Messdatei
+        print(entry.describe())         # weight: offset=37 factor=1.00402 (500 g …)
+```
+
+Bekannte Werte lassen sich auch direkt hinschreiben, in der Konfiguration:
+
+```json
+"calibrations": {
+  "weight": { "offset": 37.0, "factor": 1.004,
+              "reference": "500 g Prüfgewicht, 2026-09-06" }
+}
+```
+
+### Warum nicht im Katalog
+
+Der Katalog beschreibt das **Telegramm**: welche Bytes welche Größe tragen.
+Das ist eine Eigenschaft des Geräts, wird einmal geprüft und von allen geteilt.
+Eine Tara ist eine Eigenschaft **dieses Laufs an diesem Aufbau** und ändert
+sich täglich. Beides in dieselbe Datei zu schreiben hieße, den Katalog bei
+jeder Messung anzufassen — und damit aufzugeben, was ihn brauchbar macht.
+
+Das gilt nicht nur für die Wägezelle: der Drehmomentsensor am
+Drehmomentprüfstand braucht denselben Nullabgleich im Stillstand.
+
+### Was `tare()` absichert
+
+| | |
+|---|---|
+| **Gemittelt**, nicht ein Einzelwert | eine Wägezelle rauscht; ein einzelner Wert wäre ein Zufallsnullpunkt für den ganzen Lauf |
+| Nur Telegramme **aus dem Abgleichfenster** | das zuletzt empfangene stammt von *vor* dem Auflegen des Prüfgewichts und würde den Mittelwert ziehen |
+| `tolerance` lehnt einen **bewegten Aufbau** ab | eine Tara während des Anlaufs vergiftet still jeden Schubwert des Laufs |
+| `TareResult` nennt Streuung und Anzahl | der Beleg, dass der Aufbau wirklich stillstand — `result.describe()` gehört ins Protokoll |
+| Ein **stummer Sensor** bricht ab | statt endlos auf Werte zu warten, die nicht kommen |
+
+### Reihenfolge gegenüber den Grenzwerten
+
+Die Kalibrierung wirkt **beim Empfang**, bevor Grenzwerte prüfen und bevor
+jemand liest. Sonst hätte eine Schubgrenze einen anderen Nullpunkt als der
+Messwert daneben. Ein `tare()` zieht außerdem das zuletzt empfangene Telegramm
+mit, damit direkt nach dem Abgleich nicht noch der alte Nullpunkt anliegt.
+
 ## Verwendung: Überwachung während einer Messung
 
 `Device` liest den Bus in einem Hintergrundthread und hält immer nur die
@@ -304,6 +446,9 @@ Der Monitor ist bewusst *fail-closed* — im Zweifel bricht die Messung ab:
 | Telegramm zu kurz oder unlesbar | Wert wird nicht aktualisiert und altert aus; die Meldung nennt den Dekodierfehler |
 | Senden auf eine Statusmeldung | `send()`/`set()` wirft `ReadOnlyMessageError`, es geht nichts auf den Bus |
 | Sollwert passt nicht ins Format | `InvalidValueError`, es geht nichts auf den Bus |
+| Signal verlässt seinen Grenzbereich | sicherer Zustand geht raus, danach wirft jedes Lesen `LimitError` |
+| Überwachte Nachricht bleibt aus | dasselbe — ein schweigender Sensor gilt als Ausfall, nicht als unkritisch |
+| Sicherer Zustand kommt nicht durch | `SafeStateError` mit der Liste dessen, was fehlte |
 
 Der Startzeitpunkt ist damit ein Selbsttest: Nach dem Betreten des
 `with`-Blocks steht fest, dass **jede** konfigurierte ID sendet und dass
@@ -365,15 +510,16 @@ ein Backend ohne Zeitstempel es verfälschen kann.
 | `bitrate` | nein | Vorgabe `1000000` |
 | `max_age` | nein | Höchstalter eines Werts in Sekunden, Vorgabe `1.0` |
 | `startup_timeout` | nein | Wartezeit auf das erste Telegramm jeder ID, Vorgabe `5.0` |
-| `limits` | nein | Grenzwerte je Signalname für das Messskript |
+| `limits` | nein | zulässiger Bereich je Signalname, siehe unten |
+| `safe_state` | nein | Telegramme, die den Prüfstand entwaffnen, in Sendereihenfolge |
+| `calibrations` | nein | Nullpunkt und Spanne je Signal für diesen Aufbau |
 
 Arbitration-IDs und Byte-Offsets stehen **nicht** in der Konfiguration. Sie
 gehören in den Katalog, wo sie einmal deklariert und einmal geprüft werden.
 
-`limits` wird von der Bibliothek **nicht** durchgesetzt — sie trägt die Werte
-nur mit, damit Grenzwerte und CAN-Parameter in derselben Datei stehen. Die
-Abbruchentscheidung trifft das Messskript. Ein Grenzwert für ein Signal, das
-gar nicht überwacht wird, ist ein Fehler und kein stiller No-op.
+Ein Grenzwert für ein Signal, das gar nicht überwacht wird, ist ein Fehler und
+kein stiller No-op. Was beim Überschreiten passiert, steht im nächsten
+Abschnitt.
 
 Unbekannte Schlüssel führen ebenfalls zu einem Fehler. Ein Tippfehler wie
 `maxage` würde sonst still auf die Vorgabe zurückfallen und das
@@ -693,6 +839,8 @@ komfortabel darüber.
 | [monitor.py](src/can_integration/monitor.py) | `SignalMonitor` für die laufende Messung |
 | [reader.py](src/can_integration/reader.py) | `SignalReader` für Inbetriebnahme und Diagnose |
 | [config.py](src/can_integration/config.py) | `Config` aus JSON |
+| [safety.py](src/can_integration/safety.py) | `Limit`, `SafeState`: Grenzwerte und der Zustand, in den der Prüfstand fällt |
+| [calibration.py](src/can_integration/calibration.py) | `Calibration`: Nullpunkt und Spanne eines Sensors für diesen Lauf |
 | [cli.py](src/can_integration/cli.py) | der Konsolenbefehl `can-integration` |
 | [sim/logfile.py](src/can_integration/sim/logfile.py) | CL1000-Aufzeichnung lesen: `Recording`, Zykluszeiten, Katalogabdeckung |
 | [sim/replay.py](src/can_integration/sim/replay.py) | `LogPlayer`: eine Aufzeichnung zeitrichtig auf einen Bus spielen |
@@ -721,6 +869,8 @@ python -m unittest discover -s tests -v
 | `test_reader.py` | blockierender Einzelabruf |
 | `test_monitor.py` | Hintergrundüberwachung und Fehlerverhalten |
 | `test_device.py` | die einfache Schnittstelle: `Device` und Modulfunktionen |
+| `test_safety.py` | Grenzwerte, Wachhund, sicherer Zustand und sein Auslösen |
+| `test_calibration.py` | Tara, Spannenabgleich und ihre Reihenfolge vor den Grenzwerten |
 | `test_sim_logfile.py` | Aufzeichnung lesen: Zeitstempel, Trennzeichen, Katalogabdeckung |
 | `test_sim_replay.py` | Replay auf einem `virtual`-Bus, gelesen von einem echten `Device` |
 | `test_sim_device.py` | Zeitplan, Zustand, Kommandos und der Rundlauf über beide Richtungen |

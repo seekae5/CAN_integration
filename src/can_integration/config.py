@@ -14,15 +14,18 @@ from pathlib import Path
 from types import MappingProxyType
 from typing import Any
 
+from .calibration import Calibration, calibrations_from_dict
 from .catalog import DEFAULT_CATALOG, Catalog, load_json
-from .signals import Message, resolve_signal, signal_keys
+from .safety import Limit, SafeState, limits_from_dict, safe_state_from_list
+from .signals import Message, signal_keys
 
 DEFAULT_MAX_AGE = 1.0
 DEFAULT_STARTUP_TIMEOUT = 5.0
 
-#: ``catalog`` is derived from the ``"catalog"`` path in the JSON file and is
-#: therefore not a field a caller may set through ``from_dict``.
-_DERIVED_FIELDS = frozenset({"catalog"})
+#: ``catalog`` is derived from the ``"catalog"`` path in the JSON file and
+#: ``limit_rules`` from ``"limits"``; neither is a field a caller may set
+#: through ``from_dict``.
+_DERIVED_FIELDS = frozenset({"catalog", "limit_rules", "calibration_rules"})
 
 
 @dataclass(frozen=True)
@@ -31,9 +34,18 @@ class Config:
 
     ``messages`` names catalog entries; everything about their layout comes
     from the catalog. ``interface``, ``channel`` and ``bitrate`` stay ``None``
-    unless the file overrides the defaults of the CAN backend. ``limits`` is
-    carried for the calling measurement application; this package never
-    enforces a limit on its own.
+    unless the file overrides the defaults of the CAN backend.
+
+    ``limits`` is the declaration as it stands in the file; ``limit_rules``
+    is the same thing parsed into :class:`~can_integration.safety.Limit`
+    objects, which is what a :class:`~can_integration.device.Device` acts on.
+    ``safe_state`` names the telegrams that are sent when a limit trips or the
+    measurement ends -- in the order they are listed.
+
+    ``calibrations`` is the declaration, ``calibration_rules`` the parsed
+    form. It
+    holds the zero and the span of a sensor for *this* run; the layout of its
+    telegram stays in the catalog.
     """
 
     messages: tuple[str, ...]
@@ -42,8 +54,12 @@ class Config:
     bitrate: int | None = None
     max_age: float = DEFAULT_MAX_AGE
     startup_timeout: float = DEFAULT_STARTUP_TIMEOUT
-    limits: Mapping[str, float] = field(default_factory=dict)
+    limits: Mapping[str, Any] = field(default_factory=dict)
+    calibrations: Mapping[str, Any] = field(default_factory=dict)
+    safe_state: SafeState | None = None
     catalog: Catalog = field(default_factory=lambda: DEFAULT_CATALOG)
+    limit_rules: tuple[Limit, ...] = field(init=False, default=())
+    calibration_rules: tuple[Calibration, ...] = field(init=False, default=())
 
     def __post_init__(self) -> None:
         names = self.messages
@@ -65,13 +81,26 @@ class Config:
             raise ValueError(f"message listed twice: {', '.join(duplicates)}")
 
         object.__setattr__(self, "limits", MappingProxyType(dict(self.limits)))
-        for name, limit in self.limits.items():
-            try:
-                resolve_signal(definitions, name)
-            except LookupError as error:
-                raise ValueError(f"limit for {name!r}: {error}") from None
-            if not isinstance(limit, (int, float)) or isinstance(limit, bool):
-                raise ValueError(f"limit for {name!r} must be a number")
+        object.__setattr__(
+            self, "limit_rules", limits_from_dict(self.limits, definitions)
+        )
+        object.__setattr__(
+            self, "calibrations", MappingProxyType(dict(self.calibrations))
+        )
+        object.__setattr__(
+            self,
+            "calibration_rules",
+            calibrations_from_dict(self.calibrations, definitions),
+        )
+
+        if self.safe_state is not None and not isinstance(self.safe_state, SafeState):
+            object.__setattr__(
+                self,
+                "safe_state",
+                safe_state_from_list(self.safe_state, catalog=self.catalog),
+            )
+        elif isinstance(self.safe_state, SafeState):
+            self.safe_state.validate(self.catalog)
 
     @property
     def definitions(self) -> tuple[Message, ...]:
@@ -84,8 +113,29 @@ class Config:
         return tuple(signal_keys(self.definitions))
 
     def limit(self, name: str) -> float | None:
-        """The configured limit for a signal, or None if there is none."""
-        return self.limits.get(name)
+        """The upper limit of a signal, or None if none is declared.
+
+        The short form of the whole story: a rule may also carry a lower
+        bound and an action. Those live in :attr:`limit_rules`.
+        """
+        for rule in self.limit_rules:
+            if rule.signal == name:
+                return rule.maximum
+        return None
+
+    def rule(self, name: str) -> Limit | None:
+        """The full limit rule for a signal, or None if none is declared."""
+        for rule in self.limit_rules:
+            if rule.signal == name:
+                return rule
+        return None
+
+    def calibration_of(self, name: str) -> Calibration | None:
+        """The declared calibration of a signal, or None if there is none."""
+        for entry in self.calibration_rules:
+            if entry.signal == name:
+                return entry
+        return None
 
     @classmethod
     def from_dict(

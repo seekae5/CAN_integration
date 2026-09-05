@@ -32,6 +32,7 @@ from .catalog import (
     UnknownMessageError,
     load_json,
 )
+from .calibration import Calibration, CalibrationError, TareResult
 from .config import Config
 from .device import (
     Device,
@@ -53,6 +54,16 @@ from .device import (
 )
 from .monitor import SignalMonitor, StaleSignalError
 from .reader import SignalReader
+from .safety import (
+    ACTIONS,
+    Limit,
+    LimitError,
+    SafeCommand,
+    SafeState,
+    SafeStateError,
+    SafeStateResult,
+    Violation,
+)
 from .signals import (
     AmbiguousSignalError,
     InvalidFrameError,
@@ -92,6 +103,16 @@ __all__ = [
     "load_json",
     "resolve_signal",
     "signal_keys",
+    # Nullpunkt und Spanne eines Sensors
+    "Calibration",
+    "TareResult",
+    # Sicherheit: Grenzwerte und der Zustand, in den der Prüfstand fällt
+    "ACTIONS",
+    "Limit",
+    "SafeCommand",
+    "SafeState",
+    "SafeStateResult",
+    "Violation",
     # Bausteine mit mehr Kontrolle
     "BusConnection",
     "Config",
@@ -103,10 +124,13 @@ __all__ = [
     "DEFAULT_INTERFACE",
     # Fehler
     "AmbiguousSignalError",
+    "CalibrationError",
     "InvalidFrameError",
     "InvalidValueError",
+    "LimitError",
     "NotConnectedError",
     "ReadOnlyMessageError",
+    "SafeStateError",
     "SignalTimeoutError",
     "StaleSignalError",
     "UnknownMessageError",

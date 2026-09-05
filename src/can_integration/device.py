@@ -21,6 +21,8 @@ anderes als ein Gerät, das das Modul für ein Skript mitführt.
 
 from __future__ import annotations
 
+import threading
+import time
 from collections.abc import Iterable, Mapping
 from types import TracebackType
 
@@ -28,8 +30,22 @@ import can
 
 from .bus import Reading
 from .catalog import DEFAULT_CATALOG, Catalog
+from .calibration import (
+    Calibration,
+    CalibrationError,
+    TareResult,
+    check_at_rest,
+    summarise,
+)
 from .config import DEFAULT_MAX_AGE, DEFAULT_STARTUP_TIMEOUT, Config
 from .monitor import SignalMonitor
+from .safety import (
+    Limit,
+    SafeState,
+    SafeStateError,
+    SafeStateResult,
+    Violation,
+)
 from .signals import Message, Signal
 
 
@@ -60,8 +76,23 @@ class Device:
         interface: str | None = None,
         channel: str | None = None,
         bitrate: int | None = None,
+        limits: Iterable[Limit] = (),
+        calibrations: Iterable[Calibration] = (),
+        safe_state: SafeState | None = None,
         catalog: Catalog = DEFAULT_CATALOG,
     ) -> None:
+        limits = tuple(limits)
+        if safe_state is not None:
+            # Jetzt prüfen, nicht im Notfall: ein sicherer Zustand, der erst
+            # beim Auslösen auffliegt, ist keiner.
+            safe_state.validate(catalog)
+
+        self._safe_state = safe_state
+        self._safe_lock = threading.Lock()
+        self._safe_triggered = False
+        #: Ergebnis des letzten Auslösens, für Protokoll und Nachschau.
+        self.last_safe_state: SafeStateResult | None = None
+
         self._monitor = SignalMonitor(
             messages,
             max_age=max_age,
@@ -70,6 +101,10 @@ class Device:
             interface=interface,
             channel=channel,
             bitrate=bitrate,
+            limits=limits,
+            calibrations=calibrations,
+            on_violation=self._on_violation,
+            watchdog=safe_state is not None,
             catalog=catalog,
         )
 
@@ -89,6 +124,9 @@ class Device:
             interface=None if bus is not None else config.interface,
             channel=None if bus is not None else config.channel,
             bitrate=None if bus is not None else config.bitrate,
+            limits=config.limit_rules,
+            calibrations=config.calibration_rules,
+            safe_state=config.safe_state,
             catalog=config.catalog,
         )
 
@@ -100,8 +138,76 @@ class Device:
         return self
 
     def stop(self) -> None:
-        """Empfang beenden und einen selbst geöffneten Bus schließen."""
-        self._monitor.stop()
+        """Sicheren Zustand senden, Empfang beenden, eigenen Bus schließen.
+
+        Der sichere Zustand geht **vor** dem Schließen des Busses raus, und er
+        geht bei jedem Ende raus -- auch beim geplanten. Eine Messung, die
+        sauber endet, soll den Prüfstand ebenso entwaffnet zurücklassen wie
+        eine, die abbricht.
+
+        Wirft ``SafeStateError``, wenn nicht alles durchkam. Der Empfang wird
+        in jedem Fall beendet.
+        """
+        result = None
+        try:
+            if self._safe_state is not None:
+                result = self.safe()
+        finally:
+            self._monitor.stop()
+
+        if result is not None and not result.complete:
+            raise SafeStateError(str(result))
+
+    def safe(self) -> SafeStateResult:
+        """Den sicheren Zustand jetzt senden und melden, was ankam.
+
+        Ohne konfigurierten sicheren Zustand ein leeres, vollständiges
+        Ergebnis -- der Aufruf ist dann eine Aussage über nichts, kein Fehler.
+        """
+        if self._safe_state is None:
+            return SafeStateResult()
+
+        result = self._safe_state.apply(self._send_safe)
+        self.last_safe_state = result
+        return result
+
+    def _send_safe(
+        self, message: str, values: Mapping[str, float], timeout: float
+    ) -> None:
+        self._monitor.connection.send(message, values, timeout=timeout)
+
+    def _on_violation(self, violation: Violation) -> None:
+        """Aus dem Empfangsthread: Grenzwert verletzt oder Telegramm weg.
+
+        Nur ein Abbruch löst aus, und nur einmal -- danach ist die Messung
+        ohnehin zu Ende, und ein zweites Auslösen brächte den Prüfstand nicht
+        sicherer.
+        """
+        if not violation.aborts:
+            return
+        with self._safe_lock:
+            if self._safe_triggered:
+                return
+            self._safe_triggered = True
+        self.safe()
+
+    @property
+    def safe_state(self) -> SafeState | None:
+        return self._safe_state
+
+    @property
+    def limits(self) -> tuple[Limit, ...]:
+        return self._monitor.limits
+
+    @property
+    def violations(self) -> tuple[Violation, ...]:
+        """Alles, was seit dem Start aufgefallen ist, in der Reihenfolge."""
+        return self._monitor.violations
+
+    @property
+    def tripped(self) -> Violation | None:
+        """Die Verletzung, die die Messung abgebrochen hat, falls es eine gab."""
+        return self._monitor.tripped
 
     def __enter__(self) -> Device:
         return self.start()
@@ -112,6 +218,10 @@ class Device:
         exc_value: BaseException | None,
         traceback: TracebackType | None,
     ) -> None:
+        # Ein fehlgeschlagener sicherer Zustand wird auch dann gemeldet, wenn
+        # der Block ohnehin mit einem Fehler endet: die ursprüngliche Ursache
+        # bleibt als __context__ in der Kette sichtbar, aber "der Prüfstand
+        # liess sich nicht entwaffnen" ist die dringendere Nachricht.
         self.stop()
 
     # -- Lesen -------------------------------------------------------------
@@ -135,6 +245,146 @@ class Device:
     def signal(self, name: str) -> Signal:
         """Die Definition hinter einem Namen: Einheit, Offset, Skalierung."""
         return self._monitor.signal(name)
+
+    # -- Nullpunkt und Spanne ----------------------------------------------
+
+    @property
+    def calibrations(self) -> tuple[Calibration, ...]:
+        """Alle wirksamen Kalibrierungen -- gehören in den Kopf der Messdatei."""
+        return self._monitor.calibrations
+
+    def calibration(self, name: str) -> Calibration | None:
+        """Nullpunkt und Spanne eines Signals, oder ``None``."""
+        return self._monitor.calibration(name)
+
+    def set_calibration(self, calibration: Calibration) -> None:
+        """Eine Kalibrierung setzen oder ersetzen, auch im laufenden Betrieb."""
+        self._monitor.set_calibration(calibration)
+
+    def tare(
+        self,
+        name: str,
+        *,
+        duration: float = 1.0,
+        minimum_samples: int = 5,
+        tolerance: float | None = None,
+        reference: str = "",
+    ) -> TareResult:
+        """Den Nullpunkt eines Signals im Ruhezustand messen und setzen.
+
+        Nimmt ``duration`` Sekunden lang Werte auf und legt deren Mittel als
+        Tara fest. Gemittelt wird, weil eine Wägezelle rauscht: ein einzelner
+        Wert wäre ein Zufallsnullpunkt für den ganzen Lauf.
+
+        ``tolerance`` -- in der Einheit des Telegramms -- ist die Sicherung
+        dagegen, versehentlich im Betrieb zu tarieren. Streuen die Werte
+        weiter als erlaubt, stand der Aufbau nicht still, und der Abgleich
+        wird abgelehnt statt still übernommen.
+
+        Der Prüfstand muss dafür laufen und senden; der Nullpunkt gilt ab dem
+        nächsten Telegramm.
+        """
+        current = self.calibration(name) or Calibration(name)
+        samples, elapsed = self._sample_raw(name, duration, minimum_samples)
+
+        result = summarise(name, samples, elapsed)
+        check_at_rest(result, tolerance)
+
+        self.set_calibration(
+            current.with_offset(result.offset, reference=reference)
+        )
+        return result
+
+    def calibrate(
+        self,
+        name: str,
+        expected: float,
+        *,
+        duration: float = 1.0,
+        minimum_samples: int = 5,
+        tolerance: float | None = None,
+        reference: str = "",
+    ) -> Calibration:
+        """Die Spanne gegen einen bekannten Wert abgleichen.
+
+        Ablauf am Schubprüfstand: unbelastet :meth:`tare` rufen, dann das
+        Prüfgewicht auflegen und ``calibrate("weight", 500.0)``. Der Faktor
+        wird so gesetzt, dass die Messung den bekannten Wert liefert.
+
+        ``reference`` sollte sagen, wogegen abgeglichen wurde -- ein Faktor
+        ohne diese Angabe ist eine Zahl ohne Aussage.
+        """
+        if expected == 0:
+            raise ValueError(
+                "calibrating against zero would say nothing about the span; "
+                "use tare() for the zero point"
+            )
+
+        current = self.calibration(name) or Calibration(name)
+        samples, elapsed = self._sample_raw(name, duration, minimum_samples)
+        result = summarise(name, samples, elapsed)
+        check_at_rest(result, tolerance)
+
+        tared = result.offset - current.offset
+        if tared == 0:
+            raise CalibrationError(
+                f"{name} reads its zero point with the reference applied: "
+                f"either nothing is loaded or the tare is wrong, and a span "
+                f"cannot be derived from it"
+            )
+
+        calibration = current.with_factor(expected / tared, reference=reference)
+        self.set_calibration(calibration)
+        return calibration
+
+    def _sample_raw(
+        self, name: str, duration: float, minimum_samples: int
+    ) -> tuple[list[float], float]:
+        """Werte sammeln, wie das Gerät sie meldet -- vor jeder Kalibrierung.
+
+        Gezählt werden nur *neue* Telegramme: schneller abzufragen als der
+        Sensor sendet, würde denselben Wert mehrfach mitteln und eine
+        Genauigkeit vortäuschen, die es nicht gibt.
+        """
+        if duration <= 0:
+            raise ValueError("duration must be greater than zero")
+        if minimum_samples < 1:
+            raise ValueError("minimum_samples must be at least one")
+
+        current = self.calibration(name) or Calibration(name)
+        signal_name = self.signal(name).name
+
+        samples: list[float] = []
+        last: float | None = None
+        started = time.monotonic()
+        # Reicht die Zeit nicht für die geforderten Werte, wird gewartet --
+        # aber nicht endlos, sonst hängt ein Abgleich an einem stummen Sensor.
+        give_up = started + duration * 3 + 0.5
+
+        while True:
+            self.get(name)  # erzwingt Frische, Grenzwerte und Busfehler
+            reading = self.reading(name)
+            # Nur Telegramme aus dem Abgleichfenster. Das zuletzt empfangene
+            # stammt aus der Zeit *davor* -- beim Kalibrieren also von vor dem
+            # Auflegen des Prüfgewichts, und es würde den Mittelwert ziehen.
+            if (
+                reading is not None
+                and reading.monotonic > started
+                and reading.monotonic != last
+            ):
+                last = reading.monotonic
+                samples.append(current.undo(reading.values[signal_name]))
+
+            now = time.monotonic()
+            if now >= started + duration and len(samples) >= minimum_samples:
+                return samples, now - started
+            if now >= give_up:
+                raise CalibrationError(
+                    f"only {len(samples)} reading(s) of {name!r} arrived in "
+                    f"{now - started:.2f} s, {minimum_samples} are required; "
+                    f"is the sensor sending often enough?"
+                )
+            time.sleep(0.002)
 
     # -- Schreiben ---------------------------------------------------------
 

@@ -1,17 +1,27 @@
-"""Background monitoring of CAN telegrams for safety interlocks."""
+"""Background monitoring of CAN telegrams for safety interlocks.
+
+The monitor keeps the newest value of every message and, if limits are
+declared, watches them *while receiving* rather than when someone asks. Two
+things trip it: a value that leaves its range, and a message that stops
+arriving. What happens next is not decided here -- the monitor reports through
+``on_violation``, and :class:`~can_integration.device.Device` turns that into
+the safe state.
+"""
 
 from __future__ import annotations
 
 import threading
 import time
-from collections.abc import Iterable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from types import MappingProxyType, TracebackType
 
 import can
 
 from .bus import BusConnection, Reading, SignalTimeoutError
+from .calibration import Calibration
 from .catalog import DEFAULT_CATALOG, Catalog
 from .config import DEFAULT_MAX_AGE, DEFAULT_STARTUP_TIMEOUT, Config
+from .safety import Limit, LimitError, Violation
 from .signals import InvalidFrameError, Message, Signal, resolve_signal, signal_keys
 
 POLL_INTERVAL = 0.1
@@ -49,6 +59,10 @@ class SignalMonitor:
         interface: str | None = None,
         channel: str | None = None,
         bitrate: int | None = None,
+        limits: Iterable[Limit] = (),
+        calibrations: Iterable[Calibration] = (),
+        on_violation: Callable[[Violation], None] | None = None,
+        watchdog: bool = False,
         catalog: Catalog = DEFAULT_CATALOG,
     ) -> None:
         if max_age <= 0:
@@ -68,6 +82,23 @@ class SignalMonitor:
         self._max_age = max_age
         self._startup_timeout = startup_timeout
 
+        # Grenzwerte nach Nachricht sortieren: geprüft wird beim Empfang, und
+        # dort liegt genau eine Nachricht vor.
+        self._limits = tuple(limits)
+        self._by_message: dict[str, list[tuple[Limit, Signal]]] = {}
+        for limit in self._limits:
+            message, signal = resolve_signal(self.messages, limit.signal)
+            self._by_message.setdefault(message.name, []).append((limit, signal))
+        self._on_violation = on_violation
+        # Der Wachhund ist scharf, sobald es etwas zu bewachen gibt. Ohne
+        # Grenzwerte und ohne sicheren Zustand bleibt es beim bisherigen
+        # Verhalten: ein veralteter Wert fällt beim Lesen auf und der Wert
+        # kann sich wieder fangen.
+        self._watchdog = watchdog or bool(self._limits)
+        self._violations: list[Violation] = []
+        self._active: dict[str, Violation] = {}
+        self._tripped: Violation | None = None
+
         self._lock = threading.Lock()
         self._readings: dict[str, Reading] = {}
         self._decode_errors: dict[str, InvalidFrameError] = {}
@@ -76,12 +107,21 @@ class SignalMonitor:
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
 
+        # Kalibrierung wird angewandt, *bevor* Grenzwerte pruefen und bevor
+        # jemand liest: sonst haette eine Schubgrenze einen anderen Nullpunkt
+        # als der Messwert daneben. Erst hier, weil ``_install`` das zuletzt
+        # empfangene Telegramm mitzieht und dafuer ``_readings`` braucht.
+        self._calibration: dict[str, list[tuple[Calibration, Signal]]] = {}
+        for entry in calibrations:
+            self._install(entry)
+
     @classmethod
     def from_config(
         cls,
         config: Config,
         *,
         bus: can.BusABC | None = None,
+        on_violation: Callable[[Violation], None] | None = None,
     ) -> SignalMonitor:
         """Build a monitor from a configuration, optionally on a shared bus."""
         return cls(
@@ -92,12 +132,86 @@ class SignalMonitor:
             interface=None if bus is not None else config.interface,
             channel=None if bus is not None else config.channel,
             bitrate=None if bus is not None else config.bitrate,
+            limits=config.limit_rules,
+            calibrations=config.calibration_rules,
+            on_violation=on_violation,
+            watchdog=config.safe_state is not None,
             catalog=config.catalog,
         )
 
     @property
     def messages(self) -> tuple[Message, ...]:
         return self._connection.messages
+
+    @property
+    def limits(self) -> tuple[Limit, ...]:
+        return self._limits
+
+    @property
+    def calibrations(self) -> tuple[Calibration, ...]:
+        """Alle wirksamen Kalibrierungen -- fuer den Kopf der Messdatei."""
+        with self._lock:
+            return tuple(
+                entry
+                for entries in self._calibration.values()
+                for entry, _ in entries
+            )
+
+    def calibration(self, name: str) -> Calibration | None:
+        """Die Kalibrierung eines Signals, oder ``None``."""
+        message, signal = self._locate(name)
+        with self._lock:
+            for entry, defined in self._calibration.get(message.name, ()):
+                if defined is signal:
+                    return entry
+        return None
+
+    def set_calibration(self, calibration: Calibration) -> None:
+        """Eine Kalibrierung setzen oder ersetzen -- auch im laufenden Betrieb.
+
+        Eine Tara wird waehrend der Messung genommen, nicht davor: der
+        Nullpunkt gilt ab dem naechsten Telegramm.
+        """
+        with self._lock:
+            self._install(calibration)
+
+    def _install(self, calibration: Calibration) -> None:
+        """Ohne Sperre -- der Aufrufer haelt sie oder baut gerade auf."""
+        message, signal = resolve_signal(self.messages, calibration.signal)
+        existing = self._calibration.get(message.name, ())
+        previous = next(
+            (entry for entry, defined in existing if defined is signal), None
+        )
+        entries = [
+            (entry, defined) for entry, defined in existing if defined is not signal
+        ]
+        entries.append((calibration, signal))
+        self._calibration[message.name] = entries
+
+        # Das zuletzt empfangene Telegramm mitziehen. Sonst laege zwischen
+        # einer Tara und dem naechsten Telegramm ein Wert, der nach dem alten
+        # Nullpunkt gerechnet ist -- genau in dem Moment, in dem jemand
+        # nachsieht, ob die Tara gewirkt hat.
+        reading = self._readings.get(message.name)
+        if reading is None:
+            return
+        raw = (previous or Calibration(calibration.signal)).undo(
+            reading.values[signal.name]
+        )
+        values = dict(reading.values)
+        values[signal.name] = calibration.apply(raw)
+        self._readings[message.name] = reading._replace(values=values)
+
+    @property
+    def violations(self) -> tuple[Violation, ...]:
+        """Alles, was seit dem Start aufgefallen ist, in der Reihenfolge."""
+        with self._lock:
+            return tuple(self._violations)
+
+    @property
+    def tripped(self) -> Violation | None:
+        """Die Verletzung, die die Messung abgebrochen hat, falls es eine gab."""
+        return self._tripped
 
     @property
     def connection(self) -> BusConnection:
@@ -137,6 +251,8 @@ class SignalMonitor:
         """
         if self._failure is not None:
             raise self._failure
+        if self._tripped is not None:
+            raise LimitError(f"measurement stopped -- {self._tripped}")
 
         readings = {
             message.name: self._fresh_reading(message) for message in self.messages
@@ -213,36 +329,128 @@ class SignalMonitor:
         try:
             while not self._stop.is_set():
                 frame = bus.recv(timeout=POLL_INTERVAL)
-                if frame is None:
-                    continue
-
-                message = self._connection.match(frame)
-                if message is None:
-                    continue
-
-                try:
-                    values = message.decode(frame.data)
-                except InvalidFrameError as error:
-                    # Deliberately keep the previous telegram: it ages out and
-                    # the staleness check stops the measurement.
-                    self._decode_errors[message.name] = error
-                    continue
-
-                reading = Reading(
-                    message=message.name,
-                    values=values,
-                    timestamp=frame.timestamp or time.time(),
-                    monotonic=time.monotonic(),
-                )
-                with self._lock:
-                    self._readings[message.name] = reading
-                    complete = len(self._readings) == len(self.messages)
-                if complete:
-                    self._complete.set()
+                if frame is not None:
+                    self._accept(frame)
+                self._watch()
         except Exception as error:
             # Keep the failure instead of letting the thread die unnoticed.
             self._failure = error
             self._complete.set()
+
+    def _accept(self, frame) -> None:
+        """Einen empfangenen Rahmen einsortieren und seine Grenzen prüfen."""
+        message = self._connection.match(frame)
+        if message is None:
+            return
+
+        try:
+            values = message.decode(frame.data)
+        except InvalidFrameError as error:
+            # Deliberately keep the previous telegram: it ages out and
+            # the staleness check stops the measurement.
+            self._decode_errors[message.name] = error
+            return
+
+        with self._lock:
+            for calibration, signal in self._calibration.get(message.name, ()):
+                values[signal.name] = calibration.apply(values[signal.name])
+            reading = Reading(
+                message=message.name,
+                values=values,
+                timestamp=frame.timestamp or time.time(),
+                monotonic=time.monotonic(),
+            )
+            self._readings[message.name] = reading
+            complete = len(self._readings) == len(self.messages)
+        if complete:
+            self._complete.set()
+
+        self._check(message, values, reading.monotonic)
+
+    def _check(self, message: Message, values: Mapping[str, float], now: float) -> None:
+        """Die Grenzwerte dieser Nachricht prüfen -- im Empfangsthread.
+
+        Hier und nicht beim Auslesen: eine Übertemperatur, die erst auffällt,
+        wenn das Messskript zufällig fragt, ist keine Überwachung.
+        """
+        for limit, signal in self._by_message.get(message.name, ()):
+            value = values[signal.name]
+            reason = limit.check(value)
+            if reason is None:
+                self._clear(limit.signal)
+                continue
+            self._report(
+                limit.signal,
+                Violation(
+                    reason=reason,
+                    monotonic=now,
+                    signal=limit.signal,
+                    value=value,
+                    limit=limit,
+                ),
+            )
+
+    def _watch(self) -> None:
+        """Prüfen, ob eine Nachricht ausgeblieben ist.
+
+        Ein Sensor, der schweigt, ist kein unkritischer Sensor: ohne diese
+        Prüfung fiele der Ausfall erst beim nächsten Lesen auf, und bis dahin
+        liefe der Prüfstand ungeregelt weiter. Erst nach dem Start scharf --
+        davor wartet ``start`` ohnehin auf das erste Telegramm jeder ID.
+        """
+        if not self._watchdog or not self._complete.is_set():
+            return
+
+        now = time.monotonic()
+        with self._lock:
+            ages = {
+                name: now - reading.monotonic
+                for name, reading in self._readings.items()
+            }
+
+        for message in self.messages:
+            age = ages.get(message.name)
+            key = f"watchdog:{message.name}"
+            if age is not None and age <= self._max_age:
+                self._clear(key)
+                continue
+            self._report(
+                key,
+                Violation(
+                    reason=(
+                        f"no telegram of {message.label} for "
+                        f"{age:.3f} s, allowed are {self._max_age:g} s"
+                        if age is not None
+                        else f"no telegram of {message.label} received"
+                    ),
+                    monotonic=now,
+                    signal=message.name,
+                ),
+            )
+
+    def _report(self, key: str, violation: Violation) -> None:
+        """Eine Verletzung melden -- einmal je Flanke, nicht im Dauerfeuer."""
+        with self._lock:
+            if key in self._active:
+                return
+            self._active[key] = violation
+            self._violations.append(violation)
+            if violation.aborts and self._tripped is None:
+                self._tripped = violation
+
+        # Ausserhalb des Locks: der Rückruf sendet den sicheren Zustand und
+        # darf dabei nicht den Empfang blockieren.
+        if self._on_violation is not None:
+            self._on_violation(violation)
+
+    def _clear(self, key: str) -> None:
+        """Der Wert ist zurück im Bereich -- die nächste Flanke zählt wieder.
+
+        Ein Abbruch bleibt davon unberührt: war der Prüfstand einmal über der
+        Grenze, ist der Lauf zu Ende, auch wenn sich der Wert wieder fängt.
+        """
+        with self._lock:
+            self._active.pop(key, None)
 
     def _locate(self, name: str) -> tuple[Message, Signal]:
         located = self._keys.get(name)
@@ -253,6 +461,10 @@ class SignalMonitor:
     def _fresh_reading(self, message: Message) -> Reading:
         if self._failure is not None:
             raise self._failure
+
+        tripped = self._tripped
+        if tripped is not None:
+            raise LimitError(f"measurement stopped -- {tripped}")
 
         with self._lock:
             reading = self._readings.get(message.name)
