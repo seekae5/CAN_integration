@@ -10,6 +10,9 @@ Zwei Betriebsarten, beide über denselben Katalog wie die Bibliothek:
   Kommandotelegrammen verändern. Anfangs- und Ruhezustand stammen wieder aus
   der Aufzeichnung, sodass auch die Schreibrichtung ohne Prüfstand geprüft
   werden kann.
+* Ein *Verhalten* aus :mod:`can_integration.sim.behaviour` bewegt den Zustand
+  zwischen den Kommandos -- eine :class:`Ramp` an einen Sollwert oder der
+  gemessene Verlauf über :class:`FromRecording`.
 
     from can_integration.sim import Recording, LogPlayer
 
@@ -24,6 +27,17 @@ from .logfile import (
     LogFrame,
     Recording,
     parse_log,
+)
+from .behaviour import (
+    Behaviour,
+    BehaviourStep,
+    Chain,
+    Constant,
+    Follow,
+    FromRecording,
+    Noise,
+    Ramp,
+    as_behaviour,
 )
 from .device import (
     BROADCAST_ARM,
@@ -48,22 +62,31 @@ from .replay import (
 
 __all__ = [
     "BROADCAST_ARM",
+    "Behaviour",
+    "BehaviourStep",
     "BROADCAST_DISARM",
     "COMMAND_RPM_TARGET",
     "STOP_COMMAND_IDS",
     "CommandHandler",
+    "Chain",
+    "Constant",
     "Coverage",
     "Cycle",
+    "Follow",
+    "FromRecording",
     "FrameKey",
     "LogFormatError",
     "LogFrame",
     "LogPlayer",
+    "Noise",
+    "Ramp",
     "RecordedInverter",
     "Recording",
     "SimulatedDevice",
     "DIRECTIONS",
     "SIM_CHANNEL",
     "SIM_INTERFACE",
+    "as_behaviour",
     "host_sent_keys",
     "parse_log",
     "running_moment",

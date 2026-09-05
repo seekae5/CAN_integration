@@ -588,12 +588,56 @@ Aufzeichnung nicht her. Die Simulation reagiert deshalb auf beide. Jedes
 andere Kommando wird erkannt, aber nicht ausgeführt und in
 `RecordedInverter.ignored` vermerkt, statt eine Wirkung zu erfinden.
 
+### Wie sich die Werte zwischen den Kommandos bewegen
+
+Von allein ändert sich der Zustand nicht. Ein *Verhalten* aus
+[sim/behaviour.py](src/can_integration/sim/behaviour.py) rechnet ihn zwischen
+den Telegrammen weiter -- ein Aufruf `(device, dt) -> None`, mehr ist es nicht:
+
+| Verhalten | Wofür |
+|---|---|
+| `FromRecording` | treibt den Zustand mit dem **gemessenen** Verlauf aus der Aufzeichnung |
+| `Ramp` | führt ein Signal mit begrenzter Rate an ein Ziel oder an einen geschriebenen Sollwert |
+| `Follow` | koppelt ein Signal fest an ein anderes (Faktor, Versatz) |
+| `Constant` | hält ein Signal fest, etwa um es aus einer `Chain` auszunehmen |
+| `Chain` | mehrere Verhalten in fester Reihenfolge; das spätere überschreibt |
+
+`FromRecording` ist der wichtige Fall: gemessene Werte **und** ein Gerät, das
+antwortet. Der `LogPlayer` schickt aufgezeichnete Rahmen unverändert auf den
+Bus, hier gehen die aufgezeichneten *Werte* in den Zustand und das Gerät sendet
+sie in seinen eigenen Telegrammen weiter.
+
+```powershell
+python -m can_integration.sim.cli device CAN-Logs/0000309.TXT --catalog catalog.example.json --behaviour aufzeichnung
+```
+
+```python
+sim = SimulatedDevice.from_recording(
+    recording, catalog=catalog, interface="virtual", channel="sim",
+    behaviour=Ramp("rpm_actual", target="rpm_target", rate=4000),
+    noise=Noise({"rpm_actual": 5.0}, seed=1),
+)
+```
+
+Verhalten laufen nur, solange das Gerät `armed` ist. Nach einem
+Disarm-Kommando steht der Zustand still -- so, wie die Aufzeichnung es nach
+ihrem Stopp zeigt; gesendet wird weiter, ein gestopptes Gerät schweigt nicht.
+
+`Noise` ist bewusst **kein** Verhalten, sondern wirkt beim Bauen der Nutzlast.
+Würde das Rauschen in den Zustand geschrieben, addierte es sich von Schritt zu
+Schritt auf und das Signal liefe als Zufallsbewegung davon. Ein Messrauschen
+sitzt in der Messung, nicht in der Größe.
+
 ### Was die Simulation nicht kann
 
-Zwischen den beiden gemessenen Zuständen liegt nichts: ein gesetzter
-Drehzahlsollwert erscheint als `rpm_target`, aber kein Antrieb fährt ihn an.
-Ein Verlaufsmodell (Rampe, Sollwertfolge, Rauschen) ist der nächste Schritt --
-siehe [docs/CAN_Simulation_Plan.md](docs/CAN_Simulation_Plan.md).
+`Ramp` und `Follow` sind **Modellannahmen** und als solche im Code benannt: die
+Aufzeichnung sagt nicht, wie schnell dieser Antrieb hochläuft oder wie Drehzahl
+und Moment zusammenhängen. Eine Rate, die ein Test setzt, ist eine Testvorgabe
+und keine Eigenschaft des Prüfstands. Wer gemessenes Verhalten will, nimmt
+`FromRecording`.
+
+Nicht nachgebildet sind außerdem Buslast, Arbitrierung, Fehlerrahmen und
+Bitfehler: `virtual` und `udp_multicast` liefern zu, was gesendet wurde.
 
 ## Aktuelle Protokollannahmen
 
@@ -627,6 +671,7 @@ komfortabel darüber.
 | [sim/logfile.py](src/can_integration/sim/logfile.py) | CL1000-Aufzeichnung lesen: `Recording`, Zykluszeiten, Katalogabdeckung |
 | [sim/replay.py](src/can_integration/sim/replay.py) | `LogPlayer`: eine Aufzeichnung zeitrichtig auf einen Bus spielen |
 | [sim/device.py](src/can_integration/sim/device.py) | `SimulatedDevice`: zyklisch senden und auf Kommandos antworten |
+| [sim/behaviour.py](src/can_integration/sim/behaviour.py) | `Ramp`, `FromRecording`, `Noise`: wie sich die Werte bewegen |
 | [sim/transport.py](src/can_integration/sim/transport.py) | Busbesitz, den Replay und Gerät teilen |
 | [sim/cli.py](src/can_integration/sim/cli.py) | der Konsolenbefehl `can-integration-sim` |
 
@@ -653,6 +698,7 @@ python -m unittest discover -s tests -v
 | `test_sim_logfile.py` | Aufzeichnung lesen: Zeitstempel, Trennzeichen, Katalogabdeckung |
 | `test_sim_replay.py` | Replay auf einem `virtual`-Bus, gelesen von einem echten `Device` |
 | `test_sim_device.py` | Zeitplan, Zustand, Kommandos und der Rundlauf über beide Richtungen |
+| `test_sim_behaviour.py` | Rampe, gemessener Verlauf, Rauschen und das `armed`-Tor |
 
 Die technischen Erkenntnisse aus den Ursprungsskripten sind unter
 [docs/CAN_Temperaturauswertung.md](docs/CAN_Temperaturauswertung.md)

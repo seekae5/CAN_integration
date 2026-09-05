@@ -22,7 +22,7 @@ from __future__ import annotations
 
 import threading
 import time
-from collections.abc import Callable, Iterable, Mapping
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 
 import can
@@ -31,11 +31,13 @@ from ..catalog import DEFAULT_CATALOG, Catalog
 from ..signals import (
     CanFrame,
     InvalidFrameError,
+    InvalidValueError,
     Message,
     UnknownSignalError,
     resolve_signal,
     signal_keys,
 )
+from .behaviour import BehaviourStep, Noise, as_behaviour
 from .logfile import Recording
 from .replay import host_sent_keys
 from .transport import BusOwner
@@ -120,6 +122,9 @@ class SimulatedDevice:
         channel: str | None = None,
         bitrate: int | None = None,
         commands: CommandHandler | None = None,
+        behaviour: BehaviourStep | Sequence[BehaviourStep] | None = None,
+        noise: Noise | None = None,
+        armed: bool = True,
         catalog: Catalog = DEFAULT_CATALOG,
     ) -> None:
         self.cycles = tuple(cycles)
@@ -141,6 +146,8 @@ class SimulatedDevice:
 
         self.catalog = catalog
         self.commands = commands
+        self.behaviour = as_behaviour(behaviour)
+        self.noise = noise
         self._messages = tuple(cycle.message for cycle in self.cycles)
         self._keys = signal_keys(self._messages)
         self._state_key = {
@@ -150,6 +157,7 @@ class SimulatedDevice:
 
         self._lock = threading.Lock()
         self._state = dict(state)
+        self._armed = bool(armed)
         self._require_complete_state()
 
         self._accepted = {
@@ -211,6 +219,22 @@ class SimulatedDevice:
     def signal_names(self) -> tuple[str, ...]:
         return tuple(self._keys)
 
+    @property
+    def armed(self) -> bool:
+        """Ob das Geraet laeuft. Verhalten rechnen nur, solange es das tut.
+
+        Ein Disarm-Kommando setzt das Flag; danach steht der Zustand still --
+        so, wie die Aufzeichnung ihn nach ihrem Stopp zeigt. Gesendet wird
+        weiter: ein gestopptes Geraet schweigt nicht, es meldet Ruhe.
+        """
+        with self._lock:
+            return self._armed
+
+    @armed.setter
+    def armed(self, value: bool) -> None:
+        with self._lock:
+            self._armed = bool(value)
+
     def values(self) -> dict[str, float]:
         """Eine Kopie des Zustands, benannt wie bei ``Device.values``."""
         with self._lock:
@@ -266,6 +290,8 @@ class SimulatedDevice:
 
         Der Wert-Teil kommt aus :meth:`Message.build_payload`, damit Defaults,
         Skalierung und Wertebereich genau wie beim Senden geprueft werden.
+        Ein eingestelltes :class:`~can_integration.sim.behaviour.Noise` wirkt
+        hier -- auf den gesendeten Wert, nicht auf den Zustand.
         Danach werden nur die von Signalen belegten Bytes in die
         aufgezeichnete Nutzlast kopiert -- der Rest bleibt, wie er gemessen
         wurde.
@@ -277,7 +303,22 @@ class SimulatedDevice:
                 for signal in message.signals
             }
 
-        body = message.build_payload(values)
+        if self.noise is None:
+            body = message.build_payload(values)
+        else:
+            noisy = {
+                signal.name: self.noise(
+                    self._state_key[(message.name, signal.name)],
+                    values[signal.name],
+                )
+                for signal in message.signals
+            }
+            try:
+                body = message.build_payload(noisy)
+            except InvalidValueError:
+                # Rauschen, das aus dem Format faellt, wird verworfen statt
+                # das Telegramm zu verlieren.
+                body = message.build_payload(values)
         if not cycle.template:
             return body
 
@@ -298,8 +339,10 @@ class SimulatedDevice:
     def run(self, stop: threading.Event | None = None) -> None:
         """Senden und empfangen, bis ``stop`` gesetzt wird.
 
-        Die Faelligkeiten laufen auf einer eigenen Uhr weiter, nicht auf der
-        Sendezeit: sonst wuerde jede Verzoegerung den Zyklus dauerhaft
+        Vor jedem Durchgang bekommt das Verhalten die seit dem letzten
+        Durchgang vergangene Zeit -- aber nur, solange das Geraet ``armed``
+        ist. Die Faelligkeiten laufen auf einer eigenen Uhr weiter, nicht auf
+        der Sendezeit: sonst wuerde jede Verzoegerung den Zyklus dauerhaft
         verschieben. Faellt der Lauf trotzdem hinter einen ganzen Zyklus
         zurueck, wird die Faelligkeit neu gesetzt statt aufgeholt -- ein
         Simulator soll nicht in einen Sendesturm laufen.
@@ -310,9 +353,14 @@ class SimulatedDevice:
 
         now = time.monotonic()
         due = [now] * len(self.cycles)
+        last = now
 
         while not stop.is_set():
             now = time.monotonic()
+            if self.behaviour is not None and self.armed:
+                self.behaviour(self, now - last)
+            last = now
+
             for index, cycle in enumerate(self.cycles):
                 if due[index] > now:
                     continue
@@ -446,9 +494,9 @@ class RecordedInverter:
 
     def _broadcast(self, device: SimulatedDevice, command: int) -> None:
         if command == BROADCAST_ARM:
-            self._apply(device, self.running)
+            self._apply(device, self.running, armed=True)
         elif command == BROADCAST_DISARM:
-            self._apply(device, self.idle)
+            self._apply(device, self.idle, armed=False)
         else:
             # 2 = trigger_Errorlog: dokumentiert, aber ohne beobachtete Wirkung.
             self.ignored.append(("broadcast_command", command))
@@ -457,7 +505,7 @@ class RecordedInverter:
         self, device: SimulatedDevice, command_id: int, value: float
     ) -> None:
         if command_id in self.stop_commands:
-            self._apply(device, self.idle)
+            self._apply(device, self.idle, armed=False)
             return
 
         name = self.setpoints.get(command_id)
@@ -471,10 +519,16 @@ class RecordedInverter:
             # nicht sendet: annehmen waere gelogen, abstuerzen unbrauchbar.
             self.ignored.append(("inverter_command", command_id))
 
-    @staticmethod
-    def _apply(device: SimulatedDevice, state: Mapping[str, float]) -> None:
+    def _apply(
+        self,
+        device: SimulatedDevice,
+        state: Mapping[str, float],
+        *,
+        armed: bool,
+    ) -> None:
         known = set(device.signal_names)
         device.update({k: v for k, v in state.items() if k in known})
+        device.armed = armed
 
 
 def schedule_from_recording(

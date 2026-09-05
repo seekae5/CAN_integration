@@ -259,9 +259,9 @@ Abschnitt 1 gefuellt werden.
 | 1 Logdatei lesen | **fertig** -- `sim/logfile.py`, `tests/test_sim_logfile.py` |
 | 2 Replay | **fertig** -- `sim/replay.py`, `sim/cli.py`, `tests/test_sim_replay.py` |
 | 3 Reagierendes Geraet | **fertig** -- `sim/device.py`, `tests/test_sim_device.py` |
-| 4 Verhalten | offen -- zwischen den beiden gemessenen Zustaenden liegt bisher nichts |
+| 4 Verhalten | **fertig** -- `sim/behaviour.py`, `tests/test_sim_behaviour.py` |
 | 5 Transport und CLI | teilweise -- `inspect`, `replay` und `device` stehen; `udp_multicast` ungetestet, weil `msgpack` hier fehlt |
-| 6 Tests | teilweise -- Parser, Replay, Kommandos, Rundlauf und Veralterung stehen |
+| 6 Tests | teilweise -- Parser, Replay, Kommandos, Verhalten, Rundlauf und Veralterung stehen |
 
 Beide Richtungen laufen damit ohne Hardware durch die echte Bibliothek; siehe
 den Abschnitt „Simulation ohne Pruefstand" in der README.
@@ -278,6 +278,17 @@ Abweichungen vom Plan, jeweils weil die Umsetzung es verlangt hat:
   aufgezeichneten Stopp-Kommando.
 * **`sim/transport.py`** haelt den Busbesitz, den Replay und Geraet teilen,
   statt ihn ein drittes Mal neben `BusConnection` zu schreiben.
+* **`Noise` ist kein Verhalten**, wie in Phase 4 vorgesehen, sondern wirkt beim
+  Bauen der Nutzlast. Als Dekorator ueber einem Verhalten haette es in den
+  Zustand geschrieben und sich von Schritt zu Schritt aufaddiert -- das Signal
+  waere als Zufallsbewegung davongelaufen statt um seinen Wert zu streuen.
+* **`SimulatedDevice.armed`** kam dazu. Ohne dieses Tor haette ein Verhalten
+  den Ruhezustand sofort wieder ueberschrieben, den ein Disarm-Kommando gerade
+  gesetzt hat.
+* **`Follow` statt eines Drehmomentmodells.** Wie Drehzahl und Moment an
+  diesem Pruefstand zusammenhaengen, gibt die Aufzeichnung nicht her; eine
+  feste Kopplung mit Faktor und Versatz behauptet wenigstens nur das, was der
+  Aufrufer selbst hineinschreibt.
 
 ## 6. Reihenfolge
 

@@ -25,6 +25,7 @@ import can
 
 from ..catalog import DEFAULT_CATALOG, Catalog, load_json
 from ..signals import format_can_id
+from .behaviour import FromRecording, Noise, Ramp
 from .device import RecordedInverter, SimulatedDevice, running_moment
 from .logfile import LogFormatError, Recording
 from .replay import DIRECTIONS, LogPlayer
@@ -114,6 +115,35 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     device.add_argument(
         "--bitrate", type=int, help="Bitrate; ohne Angabe die der Aufzeichnung"
+    )
+    device.add_argument(
+        "--behaviour",
+        choices=("keines", "aufzeichnung", "rampe"),
+        default="keines",
+        help=(
+            "wie sich die Werte zwischen den Kommandos bewegen: 'aufzeichnung' "
+            "spielt den gemessenen Verlauf in den Zustand, 'rampe' faehrt "
+            "rpm_actual an rpm_target heran (Vorgabe: keines)"
+        ),
+    )
+    device.add_argument(
+        "--rampe",
+        type=float,
+        default=4000.0,
+        metavar="EINHEITEN_PRO_S",
+        help="Aenderungsrate fuer --behaviour rampe (Vorgabe: 4000)",
+    )
+    device.add_argument(
+        "--rauschen",
+        action="append",
+        default=[],
+        metavar="SIGNAL=SIGMA",
+        help="Rauschen auf ein gesendetes Signal legen; mehrfach angebbar",
+    )
+    device.add_argument(
+        "--seed",
+        type=int,
+        help="Startwert des Zufallsgenerators, damit das Rauschen wiederholbar ist",
     )
     device.add_argument(
         "--running-at",
@@ -261,6 +291,34 @@ def announcing(inner: RecordedInverter) -> object:
     return handler
 
 
+def build_behaviour(args: argparse.Namespace, recording: Recording, catalog: Catalog):
+    """Das Verhalten, das --behaviour benennt."""
+    if args.behaviour == "aufzeichnung":
+        return FromRecording.from_recording(recording, catalog=catalog)
+    if args.behaviour == "rampe":
+        return Ramp("rpm_actual", target="rpm_target", rate=args.rampe)
+    return None
+
+
+def build_noise(args: argparse.Namespace) -> Noise | None:
+    """``--rauschen rpm_actual=5`` -> ein :class:`Noise` ueber alle Angaben."""
+    if not args.rauschen:
+        return None
+    sigma: dict[str, float] = {}
+    for text in args.rauschen:
+        name, separator, raw = text.partition("=")
+        if not separator or not name.strip():
+            raise SystemExit(f"--rauschen erwartet SIGNAL=SIGMA, nicht {text!r}")
+        try:
+            sigma[name.strip()] = float(raw)
+        except ValueError:
+            raise SystemExit(f"--rauschen {text!r}: {raw!r} ist keine Zahl")
+    try:
+        return Noise(sigma, seed=args.seed)
+    except ValueError as error:
+        raise SystemExit(f"Ungueltiges Rauschen: {error}")
+
+
 def device(args: argparse.Namespace) -> int:
     """Ein antwortendes Geraet, bis Strg+C kommt."""
     recording = load_recording(args.log)
@@ -275,6 +333,8 @@ def device(args: argparse.Namespace) -> int:
             recording,
             catalog=catalog,
             running_at=running_at,
+            behaviour=build_behaviour(args, recording, catalog),
+            noise=build_noise(args),
             interface=args.interface,
             channel=args.channel,
             bitrate=args.bitrate if args.bitrate is not None else recording.bitrate,
@@ -297,6 +357,25 @@ def device(args: argparse.Namespace) -> int:
             f"    {cycle.message.label:<40} {cycle.period * 1000:8.1f} ms "
             f"({quelle}), DLC {cycle.payload_length}"
         )
+
+    behaviour = simulated.behaviour
+    if behaviour is None:
+        print(
+            "  Verhalten: keines -- die Werte stehen still, bis ein Kommando "
+            "sie aendert"
+        )
+    elif isinstance(behaviour, FromRecording):
+        print(
+            f"  Verhalten: gemessener Verlauf, {len(behaviour.timeline)} "
+            f"Stuetzstellen ueber {behaviour.span:.3f} s, in Schleife"
+        )
+    else:
+        print(f"  Verhalten: {behaviour}")
+    if simulated.noise is not None:
+        shown = ", ".join(
+            f"{name}={value:g}" for name, value in simulated.noise.sigma.items()
+        )
+        print(f"  Rauschen auf den gesendeten Werten: {shown}")
 
     accepted = [message for message in catalog.values() if message.writable]
     if accepted:
