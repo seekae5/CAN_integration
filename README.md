@@ -527,12 +527,73 @@ und kein Sollwert, gesendet wird es trotzdem von der GUI. `--direction all`
 schaltet den Filter ab, wenn es um die Protokollanalyse und nicht um eine
 Messung geht.
 
-### Was der Replay nicht kann
+### Ein Gerät, das antwortet
 
-Eine Aufzeichnung antwortet nicht. Ein geschriebener Sollwert ändert am
-abgespielten Verkehr nichts. Ein Zustandsmodell, das auf Kommandos reagiert,
-ist der nächste Schritt -- der Plan dazu steht in
-[docs/CAN_Simulation_Plan.md](docs/CAN_Simulation_Plan.md).
+Eine Aufzeichnung antwortet nicht: ein geschriebener Sollwert ändert am
+abgespielten Verkehr nichts. Dafür gibt es `SimulatedDevice` -- ein Zustand,
+der zyklisch gesendet und von Kommandotelegrammen verändert wird:
+
+```powershell
+python -m can_integration.sim.cli device CAN-Logs/0000309.TXT --catalog catalog.example.json
+```
+
+Auch dieses Modell erfindet nichts. Es nimmt aus der Aufzeichnung:
+
+| aus dem Log | wofür |
+|---|---|
+| gemessene Zykluszeiten je CAN-ID | wie oft gesendet wird |
+| die Nutzlast kurz vor dem aufgezeichneten Stopp | der laufende Zustand |
+| die Nutzlast am Ende der Aufzeichnung | der Ruhezustand |
+| die aufgezeichnete DLC und die Bytes ohne Signal | Länge und Füllung der Telegramme |
+
+Damit läuft die Schreibrichtung durch dieselbe Bibliothek zurück:
+
+```python
+import time
+
+from can_integration import Device, load_json
+from can_integration.sim import COMMAND_RPM_TARGET, Recording, SimulatedDevice
+
+catalog = load_json("catalog.example.json")
+sim = SimulatedDevice.from_recording(
+    Recording.from_file("CAN-Logs/0000309.TXT"),
+    catalog=catalog, interface="virtual", channel="sim",
+)
+sim.start()
+with Device(["inverter_speed"], interface="virtual", channel="sim",
+            catalog=catalog) as host:
+    host.get("rpm_actual")                  # 6848.0 -- der laufende Antrieb
+
+    host.send("inverter_command", {"command_id": COMMAND_RPM_TARGET, "value": 1234})
+    time.sleep(0.05)                        # ein Zyklus, dann steht es im Telegramm
+    host.get("rpm_target")                  # 1234.0 -- vom Gerät zurückgelesen
+
+    host.send("broadcast_command", {"command": 0})
+    time.sleep(0.05)
+    host.get("rpm_actual")                  # 0.0 -- disarm, wie im Log
+sim.stop()
+```
+
+Nachgebildet sind genau drei Kommandos, jedes mit benannter Herkunft:
+
+| Kommando | Wirkung | Herkunft |
+|---|---|---|
+| `broadcast_command`, `command` = 0 / 1 | Ruhezustand / laufender Zustand | Herstellerdoku (Katalogeintrag) |
+| `inverter_command`, `command_id` = `0x0110` | setzt `rpm_target` | Herstellerdoku |
+| `inverter_command`, `command_id` = `0x0010` oder `0x0220` | Ruhezustand | in Log 0000309 beobachtet |
+
+Die beiden Stopp-Kommandos liegen im Log 3 ms auseinander, und der Verkehr
+kippt 3 ms nach dem zweiten -- welches von beiden der Auslöser ist, gibt die
+Aufzeichnung nicht her. Die Simulation reagiert deshalb auf beide. Jedes
+andere Kommando wird erkannt, aber nicht ausgeführt und in
+`RecordedInverter.ignored` vermerkt, statt eine Wirkung zu erfinden.
+
+### Was die Simulation nicht kann
+
+Zwischen den beiden gemessenen Zuständen liegt nichts: ein gesetzter
+Drehzahlsollwert erscheint als `rpm_target`, aber kein Antrieb fährt ihn an.
+Ein Verlaufsmodell (Rampe, Sollwertfolge, Rauschen) ist der nächste Schritt --
+siehe [docs/CAN_Simulation_Plan.md](docs/CAN_Simulation_Plan.md).
 
 ## Aktuelle Protokollannahmen
 
@@ -565,6 +626,8 @@ komfortabel darüber.
 | [cli.py](src/can_integration/cli.py) | der Konsolenbefehl `can-integration` |
 | [sim/logfile.py](src/can_integration/sim/logfile.py) | CL1000-Aufzeichnung lesen: `Recording`, Zykluszeiten, Katalogabdeckung |
 | [sim/replay.py](src/can_integration/sim/replay.py) | `LogPlayer`: eine Aufzeichnung zeitrichtig auf einen Bus spielen |
+| [sim/device.py](src/can_integration/sim/device.py) | `SimulatedDevice`: zyklisch senden und auf Kommandos antworten |
+| [sim/transport.py](src/can_integration/sim/transport.py) | Busbesitz, den Replay und Gerät teilen |
 | [sim/cli.py](src/can_integration/sim/cli.py) | der Konsolenbefehl `can-integration-sim` |
 
 Ein Messskript braucht davon in der Regel nur `device.py` und den Katalog.
@@ -589,6 +652,7 @@ python -m unittest discover -s tests -v
 | `test_device.py` | die einfache Schnittstelle: `Device` und Modulfunktionen |
 | `test_sim_logfile.py` | Aufzeichnung lesen: Zeitstempel, Trennzeichen, Katalogabdeckung |
 | `test_sim_replay.py` | Replay auf einem `virtual`-Bus, gelesen von einem echten `Device` |
+| `test_sim_device.py` | Zeitplan, Zustand, Kommandos und der Rundlauf über beide Richtungen |
 
 Die technischen Erkenntnisse aus den Ursprungsskripten sind unter
 [docs/CAN_Temperaturauswertung.md](docs/CAN_Temperaturauswertung.md)

@@ -258,13 +258,26 @@ Abschnitt 1 gefuellt werden.
 | 0 Naht in der Bibliothek | **fertig** -- `Message.build_payload`, `Message.cycle_time_ms` |
 | 1 Logdatei lesen | **fertig** -- `sim/logfile.py`, `tests/test_sim_logfile.py` |
 | 2 Replay | **fertig** -- `sim/replay.py`, `sim/cli.py`, `tests/test_sim_replay.py` |
-| 3 Reagierendes Geraet | offen |
-| 4 Verhalten | offen |
-| 5 Transport und CLI | teilweise -- `inspect` und `replay` stehen, `device` fehlt |
-| 6 Tests | teilweise -- Parser, Replay, Roundtrip und Veralterung stehen |
+| 3 Reagierendes Geraet | **fertig** -- `sim/device.py`, `tests/test_sim_device.py` |
+| 4 Verhalten | offen -- zwischen den beiden gemessenen Zustaenden liegt bisher nichts |
+| 5 Transport und CLI | teilweise -- `inspect`, `replay` und `device` stehen; `udp_multicast` ungetestet, weil `msgpack` hier fehlt |
+| 6 Tests | teilweise -- Parser, Replay, Kommandos, Rundlauf und Veralterung stehen |
 
-Der Ersatzpruefstand fuer alles Lesende ist damit benutzbar; siehe den
-Abschnitt „Simulation ohne Pruefstand" in der README.
+Beide Richtungen laufen damit ohne Hardware durch die echte Bibliothek; siehe
+den Abschnitt „Simulation ohne Pruefstand" in der README.
+
+Abweichungen vom Plan, jeweils weil die Umsetzung es verlangt hat:
+
+* **`Cycle.template`** kam dazu. Der Katalog beschreibt `motor_temperature`
+  mit zwei Bytes, der Pruefstand sendet acht; ohne die aufgezeichnete Nutzlast
+  als Vorlage haette das simulierte Geraet eine falsche DLC gesendet. Die
+  Vorlage legt zugleich fest, was in den Bytes steht, die kein Signal abdeckt.
+* **`running_moment`** statt „erste Nutzlast je Telegramm". Log 0000309
+  beginnt vor dem Anlauf: die erste Nutzlast zeigt einen stehenden Antrieb.
+  Der Anfangszustand ist deshalb der Augenblick unmittelbar vor dem
+  aufgezeichneten Stopp-Kommando.
+* **`sim/transport.py`** haelt den Busbesitz, den Replay und Geraet teilen,
+  statt ihn ein drittes Mal neben `BusConnection` zu schreiben.
 
 ## 6. Reihenfolge
 

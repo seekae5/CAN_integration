@@ -18,15 +18,18 @@ from collections.abc import Iterable
 
 import can
 
-from ..bus import DEFAULT_BITRATE
 from ..catalog import DEFAULT_CATALOG, Catalog, UnknownMessageError
 from .logfile import FrameKey, LogFrame, Recording, format_keys
+from .transport import SIM_CHANNEL, SIM_INTERFACE, BusOwner
 
-#: A simulation talks to itself by default: ``virtual`` is built into
-#: python-can, needs no hardware and no configuration, but it only reaches
-#: other buses inside the same process. Two terminals need ``udp_multicast``.
-SIM_INTERFACE = "virtual"
-SIM_CHANNEL = "can_integration"
+__all__ = [
+    "DIRECTIONS",
+    "HOST_TELEGRAM_NAMES",
+    "SIM_CHANNEL",
+    "SIM_INTERFACE",
+    "LogPlayer",
+    "host_sent_keys",
+]
 
 #: Telegrams the host puts on the bus although the catalog does not declare
 #: them writable. ``discovery_request`` carries a constant ASCII payload
@@ -81,10 +84,6 @@ class LogPlayer:
         catalog: Catalog = DEFAULT_CATALOG,
         exclude: Iterable[FrameKey] = (),
     ) -> None:
-        if bus is not None and (interface, channel, bitrate) != (None, None, None):
-            raise TypeError(
-                "bus cannot be combined with interface, channel or bitrate"
-            )
         if speed < 0:
             raise ValueError("speed must not be negative")
         if gap < 0:
@@ -111,13 +110,12 @@ class LogPlayer:
             blocked |= host
         self.frames: tuple[LogFrame, ...] = recording.select(exclude=blocked).frames
 
-        self._bus = bus
-        self._owns_bus = bus is None
-        self._bus_config = {
-            "interface": SIM_INTERFACE if interface is None else interface,
-            "channel": SIM_CHANNEL if channel is None else channel,
-            "bitrate": _bitrate(bitrate, recording),
-        }
+        self._owner = BusOwner(
+            bus=bus,
+            interface=interface,
+            channel=channel,
+            bitrate=bitrate if bus is not None else _bitrate(bitrate, recording),
+        )
         self._thread: threading.Thread | None = None
         self._stop = threading.Event()
         self._failure: BaseException | None = None
@@ -126,7 +124,7 @@ class LogPlayer:
     @property
     def bitrate(self) -> int:
         """Bitrate the bus is opened at -- the recorded one unless overridden."""
-        return self._bus_config["bitrate"]
+        return self._owner.bitrate
 
     @property
     def duration(self) -> float:
@@ -148,15 +146,11 @@ class LogPlayer:
 
     def connect(self) -> can.BusABC:
         """Open the configured bus if it is not open yet and return it."""
-        if self._bus is None:
-            self._bus = can.Bus(**self._bus_config)
-        return self._bus
+        return self._owner.connect()
 
     def close(self) -> None:
         """Release a bus this player opened."""
-        if self._bus is not None and self._owns_bus:
-            self._bus.shutdown()
-            self._bus = None
+        self._owner.close()
 
     def run(self, stop: threading.Event | None = None) -> int:
         """Play the recording, blocking, and return the number of frames sent.
@@ -258,9 +252,6 @@ def _wait_until(due: float, stop: threading.Event) -> bool:
     return stop.wait(delay)
 
 
-def _bitrate(bitrate: int | None, recording: Recording) -> int:
-    if bitrate is not None:
-        if bitrate <= 0:
-            raise ValueError("bitrate must be greater than zero")
-        return bitrate
-    return recording.bitrate or DEFAULT_BITRATE
+def _bitrate(bitrate: int | None, recording: Recording) -> int | None:
+    """Explicit bitrate, else the recorded one, else the caller's default."""
+    return bitrate if bitrate is not None else recording.bitrate

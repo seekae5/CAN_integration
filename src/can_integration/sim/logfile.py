@@ -185,6 +185,20 @@ class Recording:
             cycles[key] = statistics.median(gaps)
         return cycles
 
+    def payloads_at(self, t: float) -> dict[FrameKey, bytes]:
+        """Die zuletzt gesendete Nutzlast je Telegramm zum Zeitpunkt ``t``.
+
+        Der Zustand, den ein Beobachter zu diesem Zeitpunkt gesehen haette --
+        nicht der, den er in diesem Augenblick empfangen hat: ein langsames
+        Telegramm liegt dann eben schon eine Weile zurueck.
+        """
+        payloads: dict[FrameKey, bytes] = {}
+        for frame in self.frames:
+            if frame.t > t:
+                break
+            payloads[frame.key] = frame.data
+        return payloads
+
     def first_payloads(self) -> dict[FrameKey, bytes]:
         """The first payload seen per telegram -- a plausible initial state."""
         payloads: dict[FrameKey, bytes] = {}

@@ -25,8 +25,10 @@ import can
 
 from ..catalog import DEFAULT_CATALOG, Catalog, load_json
 from ..signals import format_can_id
+from .device import RecordedInverter, SimulatedDevice, running_moment
 from .logfile import LogFormatError, Recording
-from .replay import DIRECTIONS, SIM_CHANNEL, SIM_INTERFACE, LogPlayer
+from .replay import DIRECTIONS, LogPlayer
+from .transport import SIM_CHANNEL, SIM_INTERFACE
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -89,6 +91,37 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help=(
             "'device' spielt nur, was ein Geraet sendet (Vorgabe); "
             "'all' spielt die Aufzeichnung unveraendert"
+        ),
+    )
+    device = subcommands.add_parser(
+        "device",
+        help="ein antwortendes Geraet simulieren statt nur abzuspielen",
+    )
+    device.add_argument("log", help="Aufzeichnung, aus der Zustand und Zyklen stammen")
+    device.add_argument(
+        "--catalog",
+        help="JSON-Katalogerweiterung, die zusaetzlich geladen wird",
+    )
+    device.add_argument(
+        "--interface",
+        default=SIM_INTERFACE,
+        help=f"python-can-Interface (Vorgabe: {SIM_INTERFACE})",
+    )
+    device.add_argument(
+        "--channel",
+        default=SIM_CHANNEL,
+        help=f"Kanal des Interfaces (Vorgabe: {SIM_CHANNEL})",
+    )
+    device.add_argument(
+        "--bitrate", type=int, help="Bitrate; ohne Angabe die der Aufzeichnung"
+    )
+    device.add_argument(
+        "--running-at",
+        type=float,
+        metavar="SEKUNDEN",
+        help=(
+            "Zeitpunkt in der Aufzeichnung, dessen Zustand als Anfangszustand "
+            "gilt; ohne Angabe der Augenblick vor dem aufgezeichneten Stopp"
         ),
     )
     return parser.parse_args(argv)
@@ -214,10 +247,100 @@ def replay(args: argparse.Namespace) -> int:
     return 0
 
 
+def announcing(inner: RecordedInverter) -> object:
+    """Kommandos mitschreiben, bevor das Modell sie ausfuehrt."""
+
+    def handler(device: SimulatedDevice, message, values) -> None:
+        shown = "  ".join(f"{name}={value:g}" for name, value in values.items())
+        print(f"  <- {message.label}  {message.name}  {shown}")
+        inner(device, message, values)
+        if inner.ignored:
+            name, code = inner.ignored.pop()
+            print(f"     (Kommando {code:#06x} von {name} ist nicht nachgebildet)")
+
+    return handler
+
+
+def device(args: argparse.Namespace) -> int:
+    """Ein antwortendes Geraet, bis Strg+C kommt."""
+    recording = load_recording(args.log)
+    catalog = load_catalog(args.catalog)
+
+    running_at = args.running_at
+    if running_at is None:
+        running_at = running_moment(recording, catalog=catalog)
+
+    try:
+        simulated = SimulatedDevice.from_recording(
+            recording,
+            catalog=catalog,
+            running_at=running_at,
+            interface=args.interface,
+            channel=args.channel,
+            bitrate=args.bitrate if args.bitrate is not None else recording.bitrate,
+        )
+    except ValueError as error:
+        raise SystemExit(f"Simulation nicht aufbaubar: {error}")
+
+    handler = simulated.commands
+    if isinstance(handler, RecordedInverter):
+        simulated.commands = announcing(handler)  # type: ignore[assignment]
+
+    print(
+        f"{Path(args.log).name}: Anfangszustand bei t = {running_at:.3f} s "
+        f"der Aufzeichnung"
+    )
+    print(f"  {len(simulated.cycles)} Telegramme werden zyklisch gesendet:")
+    for cycle in simulated.cycles:
+        quelle = "gemessen" if cycle.measured else "geschaetzt"
+        print(
+            f"    {cycle.message.label:<40} {cycle.period * 1000:8.1f} ms "
+            f"({quelle}), DLC {cycle.payload_length}"
+        )
+
+    accepted = [message for message in catalog.values() if message.writable]
+    if accepted:
+        print(
+            "  Kommandos werden angenommen von: "
+            + ", ".join(message.name for message in accepted)
+        )
+    else:
+        print(
+            "  Der Katalog enthaelt kein writable-Telegramm: das Geraet kann "
+            "nur senden, nicht antworten."
+        )
+    print(f"  Bus: {args.interface} / {args.channel} bei {simulated.bitrate} bit/s")
+
+    try:
+        simulated.connect()
+    except can.CanInterfaceNotImplementedError as error:
+        raise SystemExit(
+            f"Interface {args.interface!r} nicht verfuegbar: {error}\n"
+            f"Fuer den Zwei-Prozess-Betrieb: pip install 'can-integration[sim]'"
+        )
+    except (can.CanError, OSError) as error:
+        raise SystemExit(f"Bus nicht verfuegbar: {error}")
+
+    print("\nGeraet laeuft. Strg+C zum Beenden.")
+    try:
+        simulated.run()
+    except (can.CanError, OSError) as error:
+        raise SystemExit(f"Busfehler: {error}")
+    finally:
+        simulated.close()
+        print(
+            f"\n{simulated.sent} Telegramme gesendet, "
+            f"{simulated.received} Kommandos empfangen."
+        )
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
     if args.command == "inspect":
         return inspect(args)
+    if args.command == "device":
+        return device(args)
     return replay(args)
 
 
